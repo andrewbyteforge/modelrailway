@@ -1,0 +1,16 @@
+﻿{
+  "schemaVersion": "1.0.0",
+  "projectId": "project_demo_001",
+  "name": "Demo Project",
+  "units": {
+    "worldUnit": "meter",
+    "scale": { "standard": "OO", "ratio": 76.2 }
+  },
+  "board": {
+    "widthM": 1.2,
+    "depthM": 0.6,
+    "thicknessM": 0.025,
+    "heightFromFloorM": 0.9
+  },
+  "table": { "enabled": true, "style": "simpleWood" }
+}

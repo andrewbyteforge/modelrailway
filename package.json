@@ -1,0 +1,17 @@
+{
+  "name": "modelrailway-workspace",
+  "version": "0.1.0",
+  "private": true,
+  "workspaces": [
+    "app",
+    "frontend",
+    "shared"
+  ],
+  "scripts": {
+    "setup": "npm install",
+    "dev": "npm run dev --workspace=frontend"
+  },
+  "devDependencies": {
+    "typescript": "^5.3.3"
+  }
+}

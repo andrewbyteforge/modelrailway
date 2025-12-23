@@ -1,0 +1,19 @@
+﻿{
+  "schemaVersion": "1.0.0",
+  "layoutId": "layout_demo_001",
+  "projectId": "project_demo_001",
+  "graph": {
+    "nodes": [
+      { "id": "n0", "pos": { "x": -0.168, "y": 0.0, "z": 0.0 } },
+      { "id": "n1", "pos": { "x": 0.0, "y": 0.0, "z": 0.0 } }
+    ],
+    "edges": []
+  },
+  "pieces": [],
+  "switches": [],
+  "blocks": [],
+  "rollingStock": [],
+  "trains": [],
+  "scenery": [],
+  "weathering": { "enabled": true, "intensity": 0.25 }
+}

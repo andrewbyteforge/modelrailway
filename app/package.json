@@ -1,0 +1,12 @@
+{
+  "name": "modelrailway-app",
+  "version": "0.1.0",
+  "private": true,
+  "dependencies": {
+    "@tauri-apps/api": "^1.5.3"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^1.5.9",
+    "typescript": "^5.3.3"
+  }
+}
