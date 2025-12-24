@@ -47,6 +47,9 @@ export class CameraSystem {
     /**
      * Create orbit camera for build mode
      */
+    /**
+     * Create orbit camera for build mode
+     */
     private createOrbitCamera(): void {
         const dims = this.project.getBoardDimensions();
         const cameraConfig = this.project.getCameraConfig();
@@ -81,8 +84,9 @@ export class CameraSystem {
         this.orbitCamera.panningSensibility = 100;
         this.orbitCamera.pinchPrecision = 50;
 
-        // Attach controls (but don't activate yet)
-        this.orbitCamera.attachControl(this.canvas, true);
+        // CRITICAL: Attach controls WITHOUT preventing default events
+        // This allows pointer events to work for placement
+        this.orbitCamera.attachControl(this.canvas, false); // ← CHANGED FROM true TO false
 
         console.log('  Orbit camera created');
     }

@@ -61,20 +61,26 @@ export class BaseboardSystem {
             const boardY = tableHeight + boardThickness / 2;
             this.baseboard.position = new Vector3(0, boardY, 0);
 
-            // CRITICAL: Make baseboard pickable
+            // CRITICAL: Make baseboard pickable FIRST
             this.baseboard.isPickable = true;
+            this.baseboard.checkCollisions = false; // Don't need collision checking
 
+            // Then apply material
             const material = new StandardMaterial('baseboardMat', this.scene);
             material.diffuseColor = new Color3(0.6, 0.4, 0.3);
             material.specularColor = new Color3(0.05, 0.05, 0.05);
             material.roughness = 0.9;
             this.baseboard.material = material;
 
+            console.log('  Baseboard created and marked as pickable');
+
         } catch (error) {
             console.error('[BaseboardSystem] Error creating baseboard:', error);
             throw error;
         }
     }
+
+    
 
     private createTable(): void {
         try {
@@ -136,7 +142,7 @@ export class BaseboardSystem {
                 }
 
                 leg.position = pos;
-                leg.isPickable = true;
+                leg.isPickable = true; // ← Make sure this exists
                 leg.material = tableMat;
                 this.tableLegs.push(leg);
             });
