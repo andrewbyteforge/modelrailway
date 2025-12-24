@@ -102,9 +102,15 @@ export class TrackRenderer {
             } else if (edge.curve.type === 'arc') {
                 // Render curved track
                 if (edge.curve.arcRadiusM && edge.curve.arcAngleDeg) {
+                    // Get the travel direction at start (opposite of connector's outward-facing forward)
+                    const startDirection = connectorA.worldForward
+                        ? connectorA.worldForward.negate()
+                        : endPos.subtract(startPos).normalize();
+
                     meshes.push(...this.renderCurvedTrack(
                         startPos,
                         endPos,
+                        startDirection,
                         edge.curve.arcRadiusM,
                         edge.curve.arcAngleDeg,
                         edge.id
@@ -174,11 +180,12 @@ export class TrackRenderer {
     }
 
     /**
-     * Render curved track section
+     * Render curved track section using proper arc geometry
      */
     private renderCurvedTrack(
         start: Vector3,
         end: Vector3,
+        startDirection: Vector3,
         radius: number,
         angleDeg: number,
         edgeId: string
@@ -186,21 +193,57 @@ export class TrackRenderer {
         const meshes: Mesh[] = [];
 
         try {
-            // For now, approximate curve with straight segments
-            const segments = Math.max(4, Math.ceil(angleDeg / 15)); // At least 4 segments
+            const angleRad = (angleDeg * Math.PI) / 180;
+
+            // Calculate perpendicular directions (left and right of travel direction)
+            // In XZ plane: left is (-z, 0, x), right is (z, 0, -x)
+            const perpLeft = new Vector3(-startDirection.z, 0, startDirection.x).normalize();
+            const perpRight = new Vector3(startDirection.z, 0, -startDirection.x).normalize();
+
+            // Determine if this is a left or right curve by checking which side the end point is on
+            const toEnd = end.subtract(start);
+            const dotLeft = Vector3.Dot(toEnd, perpLeft);
+            const isLeftCurve = dotLeft > 0;
+
+            // Arc center is perpendicular to start direction at distance = radius
+            const perpDirection = isLeftCurve ? perpLeft : perpRight;
+            const center = start.add(perpDirection.scale(radius));
+
+            // Calculate the start angle (angle from center to start point)
+            const toStart = start.subtract(center);
+            const startAngle = Math.atan2(toStart.z, toStart.x);
+
+            // Sweep direction: left curve sweeps counter-clockwise (+), right curve sweeps clockwise (-)
+            const sweepDirection = isLeftCurve ? 1 : -1;
+
+            // Use more segments for smoother curves (at least 1 segment per 5 degrees)
+            const segments = Math.max(4, Math.ceil(angleDeg / 5));
 
             for (let i = 0; i < segments; i++) {
                 const t1 = i / segments;
                 const t2 = (i + 1) / segments;
 
-                const p1 = Vector3.Lerp(start, end, t1);
-                const p2 = Vector3.Lerp(start, end, t2);
+                // Calculate angles for this segment
+                const angle1 = startAngle + sweepDirection * angleRad * t1;
+                const angle2 = startAngle + sweepDirection * angleRad * t2;
+
+                // Calculate positions on the arc
+                const p1 = new Vector3(
+                    center.x + Math.cos(angle1) * radius,
+                    start.y, // Maintain height
+                    center.z + Math.sin(angle1) * radius
+                );
+                const p2 = new Vector3(
+                    center.x + Math.cos(angle2) * radius,
+                    start.y,
+                    center.z + Math.sin(angle2) * radius
+                );
 
                 const segmentMeshes = this.renderStraightTrack(p1, p2, `${edgeId}_seg${i}`);
                 meshes.push(...segmentMeshes);
             }
 
-            console.log(`[TrackRenderer] Rendered curved track with ${segments} segments`);
+            console.log(`[TrackRenderer] Rendered curved track with ${segments} segments (radius=${radius.toFixed(3)}m, angle=${angleDeg}°)`);
         } catch (error) {
             console.error('[TrackRenderer] Error in renderCurvedTrack:', error);
         }
