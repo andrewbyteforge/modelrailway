@@ -1,9 +1,20 @@
 ﻿/**
  * Project.ts - Project configuration and state management
+ * 
+ * Manages project settings including:
+ * - Board dimensions
+ * - Table configuration
+ * - Camera settings
+ * - Scale (OO gauge)
+ * 
+ * @module Project
  */
 
 import type { Project as ProjectData } from '@shared/types';
 
+/**
+ * Project - manages project configuration and settings
+ */
 export class Project {
     private data: ProjectData | null = null;
 

@@ -3,6 +3,8 @@
  * 
  * Orbit mode: for building/editing (ArcRotateCamera)
  * Walk mode: for viewing from eye-level (UniversalCamera)
+ * 
+ * @module CameraSystem
  */
 
 import { Scene } from '@babylonjs/core/scene';
@@ -14,6 +16,9 @@ import type { Project } from '../core/Project';
 
 export type CameraMode = 'orbit' | 'walk';
 
+/**
+ * CameraSystem - manages orbit and walk cameras
+ */
 export class CameraSystem {
     private scene: Scene;
     private project: Project;
@@ -44,9 +49,6 @@ export class CameraSystem {
         console.log('✓ Camera system initialized');
     }
 
-    /**
-     * Create orbit camera for build mode
-     */
     /**
      * Create orbit camera for build mode
      */
@@ -84,9 +86,8 @@ export class CameraSystem {
         this.orbitCamera.panningSensibility = 100;
         this.orbitCamera.pinchPrecision = 50;
 
-        // CRITICAL: Attach controls WITHOUT preventing default events
-        // This allows pointer events to work for placement
-        this.orbitCamera.attachControl(this.canvas, false); // ← CHANGED FROM true TO false
+        // Attach controls (but don't activate yet)
+        this.orbitCamera.attachControl(this.canvas, true);
 
         console.log('  Orbit camera created');
     }

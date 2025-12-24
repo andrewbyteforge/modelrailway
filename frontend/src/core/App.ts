@@ -1,41 +1,39 @@
 ﻿/**
  * App.ts - Application with UI sidebar and mouse interaction
  * 
- * Main application controller that initializes and manages all subsystems:
- * - Scene and rendering
- * - Baseboard and table
- * - Camera system (orbit/walk modes)
- * - Track system
- * - UI and input handling
+ * Main application controller that initializes all systems
+ * and coordinates track placement testing.
  * 
- * This file includes extensive error handling, logging, and debugging utilities
- * to ensure robust operation and easy troubleshooting.
+ * @module App
  */
 
 import { Scene } from '@babylonjs/core/scene';
 import { Engine } from '@babylonjs/core/Engines/engine';
 import { HemisphericLight } from '@babylonjs/core/Lights/hemisphericLight';
-import { Vector3, Quaternion, Matrix } from '@babylonjs/core/Maths/math';
+import { Vector3, Quaternion } from '@babylonjs/core/Maths/math';
 import { Color3, Color4 } from '@babylonjs/core/Maths/math.color';
-import '@babylonjs/core/Culling/ray';
+// Note: Ray is imported via side-effect in main.ts
+
 import { Project } from './Project';
 import { BaseboardSystem } from '../systems/baseboard/BaseboardSystem';
 import { CameraSystem } from '../systems/camera/CameraSystem';
 import { TrackSystem } from '../systems/track/TrackSystem';
+import { TrackCatalog } from '../systems/track/TrackCatalog';
 import { UIManager } from '../ui/UIManager';
 import { InputManager } from '../ui/InputManager';
 
 // ============================================================================
-// Main Application Class
+// APP CLASS
 // ============================================================================
 
+/**
+ * Main application class
+ */
 export class App {
-    // Core Babylon.js objects
     private engine: Engine;
     private scene: Scene;
     private canvas: HTMLCanvasElement;
 
-    // Project and subsystems
     private project: Project;
     private baseboardSystem: BaseboardSystem | null = null;
     private cameraSystem: CameraSystem | null = null;
@@ -43,26 +41,21 @@ export class App {
     private uiManager: UIManager | null = null;
     private inputManager: InputManager | null = null;
 
-    // Interaction state
     private placementMode: string | null = null;
+    private connectionIndicatorsEnabled: boolean = true;
 
     // ========================================================================
-    // Constructor
+    // CONSTRUCTOR
     // ========================================================================
 
     constructor(canvas: HTMLCanvasElement) {
         if (!canvas) {
-            const error = '[App] Canvas element is required';
-            console.error(error);
-            throw new Error(error);
+            throw new Error('[App] Canvas element is required');
         }
 
         this.canvas = canvas;
 
         try {
-            console.log('[App] Initializing Babylon.js engine...');
-
-            // Create Babylon.js engine
             this.engine = new Engine(canvas, true, {
                 preserveDrawingBuffer: true,
                 stencil: true
@@ -71,22 +64,17 @@ export class App {
             if (!this.engine) {
                 throw new Error('[App] Failed to create Babylon engine');
             }
-            console.log('[App] Engine created successfully');
 
-            // Create scene
             this.scene = new Scene(this.engine);
             if (!this.scene) {
                 throw new Error('[App] Failed to create scene');
             }
-            console.log('[App] Scene created successfully');
 
-            // Configure scene
-            this.scene.clearColor = new Color4(0.85, 0.9, 0.95, 1.0);
-            console.log('[App] Scene background color set');
+            // Scene colors - neutral to prevent color tinting on materials
+            this.scene.clearColor = new Color4(0.7, 0.7, 0.7, 1.0);  // Neutral grey background
+            this.scene.ambientColor = new Color3(0, 0, 0);           // No ambient tinting
 
-            // Create project manager
             this.project = new Project();
-            console.log('[App] Project manager created');
 
             console.log('Model Railway Workbench - Initializing...');
         } catch (error) {
@@ -96,56 +84,40 @@ export class App {
     }
 
     // ========================================================================
-    // Initialization
+    // INITIALIZATION
     // ========================================================================
 
-    /**
-     * Initialize all application subsystems
-     * This is an async operation that loads project config and sets up all systems
-     */
     async initialize(): Promise<void> {
         try {
-            console.log('[App] Starting initialization sequence...');
+            console.log('[App] Starting initialization...');
 
             // Load project configuration
-            console.log('[App] Loading project configuration...');
             await this.project.load();
-            console.log('[App] Project configuration loaded');
 
-            // Setup lighting
-            console.log('[App] Setting up scene lighting...');
+            // Setup scene lighting
             this.setupLighting();
 
             // Initialize baseboard system
             console.log('[App] Initializing baseboard system...');
             this.baseboardSystem = new BaseboardSystem(this.scene, this.project);
-            if (!this.baseboardSystem) {
-                throw new Error('[App] Failed to create BaseboardSystem');
-            }
             this.baseboardSystem.initialize();
 
             // Initialize camera system
             console.log('[App] Initializing camera system...');
             this.cameraSystem = new CameraSystem(this.scene, this.project, this.canvas);
-            if (!this.cameraSystem) {
-                throw new Error('[App] Failed to create CameraSystem');
-            }
             this.cameraSystem.initialize();
 
             // Initialize track system
             console.log('[App] Initializing track system...');
             this.trackSystem = new TrackSystem(this.scene, this.project);
-            if (!this.trackSystem) {
-                throw new Error('[App] Failed to create TrackSystem');
-            }
             this.trackSystem.initialize();
+
+            // Log available track pieces
+            this.logAvailableTrackPieces();
 
             // Initialize UI manager
             console.log('[App] Initializing UI manager...');
             this.uiManager = new UIManager(document.body);
-            if (!this.uiManager) {
-                throw new Error('[App] Failed to create UIManager');
-            }
             this.uiManager.initialize((catalogId) => {
                 this.onTrackSelected(catalogId);
             });
@@ -158,57 +130,142 @@ export class App {
                 this.trackSystem,
                 this.baseboardSystem
             );
-            if (!this.inputManager) {
-                throw new Error('[App] Failed to create InputManager');
-            }
             this.inputManager.initialize();
 
             // Setup keyboard shortcuts
-            console.log('[App] Setting up keyboard shortcuts...');
             this.setupKeyboardShortcuts();
 
             // Setup pointer events for track placement
-            console.log('[App] Setting up pointer events...');
             this.setupPointerEvents();
 
-            // Display controls
-            console.log('✓ Application initialized');
+            // Place test tracks to verify rendering
+            this.placeTestTracks();
+
+            console.log('[App] ✓ Initialization complete');
             console.log('');
-            console.log('Controls:');
-            console.log('  [V] - Toggle camera mode');
-            console.log('  [R] - Reset camera');
-            console.log('  [C] - Clear all track');
-            console.log('  [ESC] - Cancel placement');
-            console.log('  [DELETE] - Delete selected piece');
-            console.log('  Click sidebar to select track type');
-            console.log('  Click board to place track');
-
-            // Debug: List all pickable meshes
-            this.debugListPickableMeshes();
-
-            // Debug: Check camera setup
-            this.debugCameraSetup();
-
-            console.log('[App] Initialization complete');
+            console.log('=== Controls ===');
+            console.log('  Click palette → Select track type');
+            console.log('  Click board → Place track (auto-snaps!)');
+            console.log('  Click track → Select track');
+            console.log('  Q/E → Rotate selected ±5°');
+            console.log('  Shift+Q/E → Rotate ±22.5°');
+            console.log('  Delete → Remove selected');
+            console.log('  ESC → Deselect / Cancel placement');
+            console.log('  V → Toggle camera mode');
+            console.log('  Home → Reset camera');
+            console.log('  Shift+S → Toggle auto-snap');
+            console.log('  Shift+I → Toggle connection indicators');
+            console.log('  Shift+C → Clear all track');
+            console.log('  T → Place test tracks');
+            console.log('================');
+            console.log('');
+            console.log('Connection indicators:');
+            console.log('  🟡 Yellow = Available connector');
+            console.log('  🟢 Green = Connected');
+            console.log('  🔵 Blue = Snap preview');
 
         } catch (error) {
             console.error('[App] Initialization error:', error);
-            console.error('[App] Stack trace:', (error as Error).stack);
             throw error;
         }
     }
 
-    // ========================================================================
-    // Scene Setup
-    // ========================================================================
+    /**
+     * Log all available track pieces from catalog
+     */
+    private logAvailableTrackPieces(): void {
+        console.log('[App] Available track pieces:');
+        const allPieces = TrackCatalog.getAll();
+        allPieces.forEach(piece => {
+            console.log(`  - ${piece.id}: ${piece.name} (${piece.lengthM.toFixed(3)}m)`);
+        });
+    }
 
     /**
-     * Setup scene lighting
-     * Creates a hemispheric light to illuminate the scene
+     * Place test tracks to verify rendering is working
      */
+    private placeTestTracks(): void {
+        if (!this.trackSystem || !this.baseboardSystem) {
+            console.error('[App] Cannot place test tracks - systems not initialized');
+            return;
+        }
+
+        const boardY = this.baseboardSystem.getBoardTopY();
+
+        console.log('[App] ========================================');
+        console.log('[App] Placing test tracks (end-to-end)...');
+        console.log('[App] ========================================');
+
+        // Test 1: First straight track - centered at X=-0.084 so connector B is at X=0
+        console.log('[App] Test 1: Placing straight track #1...');
+        const straight1 = this.trackSystem.placePiece(
+            'track.straight_168mm',
+            new Vector3(-0.084, boardY, 0),
+            Quaternion.Identity()
+        );
+        if (straight1) {
+            console.log(`[App] ✓ Straight #1 placed: ${straight1.id}`);
+            console.log(`[App]   Connector A at X=${(-0.084 - 0.084).toFixed(3)}, Connector B at X=${(-0.084 + 0.084).toFixed(3)}`);
+        } else {
+            console.error('[App] ✗ Failed to place straight track #1');
+        }
+
+        // Test 2: Second straight track - centered at X=+0.084 so connector A is at X=0
+        // This should connect to straight1's connector B!
+        console.log('[App] Test 2: Placing straight track #2 (should connect to #1)...');
+        const straight2 = this.trackSystem.placePiece(
+            'track.straight_168mm',
+            new Vector3(0.084, boardY, 0),
+            Quaternion.Identity()
+        );
+        if (straight2) {
+            console.log(`[App] ✓ Straight #2 placed: ${straight2.id}`);
+            console.log(`[App]   Connector A at X=${(0.084 - 0.084).toFixed(3)}, Connector B at X=${(0.084 + 0.084).toFixed(3)}`);
+        } else {
+            console.error('[App] ✗ Failed to place straight track #2');
+        }
+
+        // Test 3: Third straight at different Z position (not connected)
+        console.log('[App] Test 3: Placing separate straight track...');
+        const straight3 = this.trackSystem.placePiece(
+            'track.straight_168mm',
+            new Vector3(0, boardY, 0.15),
+            Quaternion.Identity()
+        );
+        if (straight3) {
+            console.log(`[App] ✓ Straight #3 placed: ${straight3.id} (separate)`);
+        } else {
+            console.error('[App] ✗ Failed to place straight track #3');
+        }
+
+        // Test 4: R1 45° curve
+        console.log('[App] Test 4: Placing R1 45° curve...');
+        const curve = this.trackSystem.placePiece(
+            'track.curve_r1_45deg_left',
+            new Vector3(-0.3, boardY, -0.15),
+            Quaternion.Identity()
+        );
+        if (curve) {
+            console.log(`[App] ✓ Curve placed: ${curve.id}`);
+        } else {
+            console.error('[App] ✗ Failed to place curve');
+        }
+
+        // Log results
+        const stats = this.trackSystem.getStats();
+        console.log('[App] ========================================');
+        console.log(`[App] Test complete: ${stats.pieceCount} pieces, ${stats.meshCount} meshes`);
+        console.log(`[App] Total track length: ${(stats.totalLengthM * 1000).toFixed(1)}mm`);
+        console.log('[App] ========================================');
+    }
+
+    // ========================================================================
+    // LIGHTING SETUP
+    // ========================================================================
+
     private setupLighting(): void {
         try {
-            console.log('[App] Creating hemispheric light...');
+            console.log('[App] Setting up scene lighting...');
 
             const light = new HemisphericLight(
                 'hemisphericLight',
@@ -217,52 +274,14 @@ export class App {
             );
 
             if (!light) {
-                throw new Error('[App] Failed to create hemispheric light');
+                throw new Error('[App] Failed to create light');
             }
 
             light.intensity = 0.8;
-            light.diffuse = new Color3(1.0, 0.98, 0.95);
-            light.groundColor = new Color3(0.3, 0.3, 0.35);
+            light.diffuse = new Color3(1.0, 0.98, 0.95);      // Warm white
+            light.groundColor = new Color3(0.3, 0.3, 0.3);    // Neutral grey (no blue tint)
 
-            console.log('[App] Lighting configured successfully');
-            console.log('[App] Light intensity:', light.intensity);
-            console.log('[App] Light diffuse:', light.diffuse);
-            // ============================================================
-            // DEBUG: Direct mesh test - can we even see the baseboard?
-            // ============================================================
-            console.log('[App] --- Direct Mesh Test ---');
-            const baseboard = this.scene.getMeshByName('baseboard');
-            if (baseboard) {
-                console.log('[App] Baseboard found:', {
-                    name: baseboard.name,
-                    isPickable: baseboard.isPickable,
-                    isVisible: baseboard.isVisible,
-                    isEnabled: baseboard.isEnabled(),
-                    position: baseboard.position,
-                    scaling: baseboard.scaling,
-                    hasGeometry: !!baseboard.getTotalVertices()
-                });
-
-                // Try to manually check if ray intersects baseboard
-                try {
-                    const ray = this.scene.createPickingRay(
-                        this.scene.pointerX,
-                        this.scene.pointerY,
-                        Matrix.Identity(),
-                        this.scene.activeCamera!
-                    );
-                    const hit = ray.intersectsMesh(baseboard);
-                    console.log('[App] Manual baseboard intersection test:', {
-                        hit: hit.hit,
-                        distance: hit.distance,
-                        pickedPoint: hit.pickedPoint
-                    });
-                } catch (err) {
-                    console.error('[App] Direct intersection test failed:', err);
-                }
-            } else {
-                console.error('[App] Baseboard mesh not found in scene!');
-            }
+            console.log('[App] ✓ Lighting configured');
         } catch (error) {
             console.error('[App] Error setting up lighting:', error);
             throw error;
@@ -270,383 +289,485 @@ export class App {
     }
 
     // ========================================================================
-    // User Interaction Handlers
+    // TRACK SELECTION
     // ========================================================================
 
-    /**
-     * Handle track selection from UI
-     * Called when user selects a track piece type from the sidebar
-     * 
-     * @param catalogId - The catalog ID of the selected track piece
-     */
     private onTrackSelected(catalogId: string): void {
         try {
-            if (!catalogId) {
-                console.warn('[App] onTrackSelected called with empty catalogId');
-                return;
-            }
-
             this.placementMode = catalogId;
             console.log(`[App] Placement mode: ${catalogId}`);
 
-            // Clear any existing selection
             if (this.inputManager) {
                 this.inputManager.clearSelection();
-            } else {
-                console.warn('[App] InputManager not available in onTrackSelected');
+                this.inputManager.setPlacementMode(true);  // Disable hover/selection
             }
-
         } catch (error) {
             console.error('[App] Error in onTrackSelected:', error);
-            console.error('[App] catalogId was:', catalogId);
         }
     }
 
-    /**
-     * Setup pointer events for track placement
-     * Handles click detection and distinguishes between clicks and camera drags
-     */
+    // ========================================================================
+    // POINTER EVENTS
+    // ========================================================================
+
+    /** Track mouse position for click vs drag detection */
+    private pointerDownPos: { x: number; y: number } | null = null;
+    private readonly DRAG_THRESHOLD = 5; // pixels - movement beyond this is a drag
+
     private setupPointerEvents(): void {
         try {
-            let pointerDownTime = 0;
-            let pointerDownPos: { x: number; y: number } | null = null;
-
-            console.log('[App] Attaching pointer observable...');
-
-            this.scene.onPointerObservable.add((pointerInfo) => {
-                try {
-                    // ============================================================
-                    // Track pointer down for click detection
-                    // ============================================================
-                    if (pointerInfo.type === 1) { // POINTERDOWN
-                        pointerDownTime = Date.now();
-                        pointerDownPos = {
-                            x: this.scene.pointerX,
-                            y: this.scene.pointerY
-                        };
-                        console.log('[App] Pointer down at:', pointerDownPos);
-                        return;
-                    }
-
-                    // ============================================================
-                    // Handle pointer up - this is where we place track
-                    // ============================================================
-                    if (pointerInfo.type !== 2) return; // POINTERUP = 2
-                    if (pointerInfo.event.button !== 0) return; // Left button only
-
-                    console.log('[App] Pointer up detected');
-
-                    // Check if this was a quick click (not a drag)
-                    const timeDiff = Date.now() - pointerDownTime;
-                    const wasQuickClick = timeDiff < 300; // Less than 300ms
-                    console.log('[App] Time since pointer down:', timeDiff, 'ms');
-
-                    // Check if pointer moved during click
-                    let pointerMoved = false;
-                    if (pointerDownPos) {
-                        const dx = Math.abs(this.scene.pointerX - pointerDownPos.x);
-                        const dy = Math.abs(this.scene.pointerY - pointerDownPos.y);
-                        pointerMoved = dx > 5 || dy > 5; // More than 5 pixels
-                        console.log('[App] Pointer movement:', { dx, dy, moved: pointerMoved });
-                    }
-
-                    if (!wasQuickClick || pointerMoved) {
-                        console.log('[App] Ignoring - was camera drag or slow click');
-                        return;
-                    }
-
-                    console.log('[App] ======================================');
-                    console.log('[App] CLICK DETECTED - Starting pick tests');
-                    console.log('[App] ======================================');
-                    console.log('[App] Pointer position:', this.scene.pointerX, this.scene.pointerY);
-                    console.log('[App] Canvas size:', this.canvas.width, 'x', this.canvas.height);
-                    console.log('[App] Engine render size:', this.engine.getRenderWidth(), 'x', this.engine.getRenderHeight());
-                    console.log('[App] Active camera:', this.scene.activeCamera?.name || 'NONE');
-
-                    // ============================================================
-                    // DEBUG: Try multiple pick methods
-                    // ============================================================
-
-                    // Method 1: Standard pick (no filter)
-                    console.log('[App] --- Pick Method 1: Standard pick ---');
-                    try {
-                        const pick1 = this.scene.pick(
-                            this.scene.pointerX,
-                            this.scene.pointerY
-                        );
-                        console.log('[App] Pick 1 result:', {
-                            hit: pick1?.hit,
-                            mesh: pick1?.pickedMesh?.name,
-                            distance: pick1?.distance,
-                            hasPickedPoint: !!pick1?.pickedPoint
-                        });
-                    } catch (error) {
-                        console.error('[App] Pick method 1 failed:', error);
-                    }
-
-                    // Method 2: Pick with isPickable filter
-                    console.log('[App] --- Pick Method 2: With pickable filter ---');
-                    let pick2 = null;
-                    try {
-                        pick2 = this.scene.pick(
-                            this.scene.pointerX,
-                            this.scene.pointerY,
-                            (mesh) => {
-                                const isPickable = mesh.isPickable;
-                                if (isPickable) {
-                                    console.log('[App] Filter checking mesh:', mesh.name, '- pickable:', isPickable);
-                                }
-                                return isPickable;
-                            }
-                        );
-                        console.log('[App] Pick 2 result:', {
-                            hit: pick2?.hit,
-                            mesh: pick2?.pickedMesh?.name,
-                            distance: pick2?.distance,
-                            hasPickedPoint: !!pick2?.pickedPoint
-                        });
-                    } catch (error) {
-                        console.error('[App] Pick method 2 failed:', error);
-                    }
-
-                    // Method 3: Manual ray casting
-                    console.log('[App] --- Pick Method 3: Manual ray casting ---');
-                    try {
-                        if (this.scene.activeCamera) {
-                            const ray = this.scene.createPickingRay(
-                                this.scene.pointerX,
-                                this.scene.pointerY,
-                                Matrix.Identity(),
-                                this.scene.activeCamera
-                            );
-                            console.log('[App] Ray origin:', ray.origin);
-                            console.log('[App] Ray direction:', ray.direction);
-                            console.log('[App] Ray length:', ray.length);
-
-                            const pick3 = this.scene.pickWithRay(ray, (mesh) => mesh.isPickable);
-                            console.log('[App] Pick 3 result:', {
-                                hit: pick3?.hit,
-                                mesh: pick3?.pickedMesh?.name,
-                                distance: pick3?.distance,
-                                hasPickedPoint: !!pick3?.pickedPoint
-                            });
-
-                            // If this worked, use it
-                            if (pick3?.hit && !pick2?.hit) {
-                                pick2 = pick3;
-                                console.log('[App] Using manual ray result');
-                            }
-                        } else {
-                            console.error('[App] No active camera for ray casting!');
-                        }
-                    } catch (error) {
-                        console.error('[App] Pick method 3 failed:', error);
-                    }
-
-                    console.log('[App] ======================================');
-
-                    // Use the best pick result
-                    const pickResult = pick2;
-
-                    // ============================================================
-                    // TRACK SELECTION MODE - Check if clicked existing track
-                    // ============================================================
-                    if (pickResult?.hit && pickResult.pickedMesh) {
-                        console.log(`[App] Hit mesh: ${pickResult.pickedMesh.name}`);
-
-                        const allPieces = this.trackSystem?.getAllPieces() || [];
-                        let isTrackPiece = false;
-
-                        for (const piece of allPieces) {
-                            if (pickResult.pickedMesh.name.includes(piece.id)) {
-                                isTrackPiece = true;
-                                console.log('[App] Identified as track piece:', piece.id);
-                                break;
-                            }
-                        }
-
-                        if (isTrackPiece) {
-                            console.log('[App] Clicked on track piece - passing to InputManager');
-                            return;
-                        }
-                    }
-
-                    // ============================================================
-                    // PLACEMENT MODE - Place new track piece
-                    // ============================================================
-                    if (this.placementMode && this.trackSystem && this.baseboardSystem) {
-                        console.log('[App] In placement mode for:', this.placementMode);
-
-                        if (!pickResult?.hit || !pickResult.pickedPoint) {
-                            console.log('[App] Click did not hit any mesh');
-                            console.log('[App] Pick result was:', pickResult);
-                            return;
-                        }
-
-                        console.log(`[App] ✓ Picked mesh: ${pickResult.pickedMesh?.name || 'NONE'}`);
-                        console.log(`[App] ✓ Pick point: (${pickResult.pickedPoint.x.toFixed(3)}, ${pickResult.pickedPoint.y.toFixed(3)}, ${pickResult.pickedPoint.z.toFixed(3)})`);
-
-                        // Calculate position on board top surface
-                        const boardY = this.baseboardSystem.getBoardTopY();
-                        const position = new Vector3(
-                            pickResult.pickedPoint.x,
-                            boardY,
-                            pickResult.pickedPoint.z
-                        );
-
-                        console.log(`[App] Placing track at: (${position.x.toFixed(3)}, ${position.y.toFixed(3)}, ${position.z.toFixed(3)})`);
-
-                        try {
-                            // Place the track piece
-                            const piece = this.trackSystem.placePiece(
-                                this.placementMode,
-                                position,
-                                Quaternion.Identity()
-                            );
-
-                            if (piece) {
-                                console.log(`[App] ✓✓✓ Successfully placed ${piece.catalogEntry.name}`);
-                            } else {
-                                console.warn('[App] ✗✗✗ Failed to place piece - placePiece returned null');
-                            }
-                        } catch (placeError) {
-                            console.error('[App] Error placing track piece:', placeError);
-                        }
-                    } else {
-                        if (!this.placementMode) {
-                            console.log('[App] Not in placement mode');
-                        }
-                        if (!this.trackSystem) {
-                            console.error('[App] TrackSystem not available!');
-                        }
-                        if (!this.baseboardSystem) {
-                            console.error('[App] BaseboardSystem not available!');
-                        }
-                    }
-
-                } catch (error) {
-                    console.error('[App] Error in pointer observable handler:', error);
-                    console.error('[App] Stack trace:', (error as Error).stack);
+            // Track mousedown position
+            this.canvas.addEventListener('pointerdown', (event: PointerEvent) => {
+                if (event.button === 0) { // Left button only
+                    this.pointerDownPos = { x: event.clientX, y: event.clientY };
                 }
             });
 
-            console.log('[App] Pointer events configured successfully');
+            // On pointerup, check if it was a click or drag
+            this.canvas.addEventListener('pointerup', (event: PointerEvent) => {
+                if (event.button !== 0 || !this.pointerDownPos) return;
 
+                // Calculate distance moved
+                const dx = event.clientX - this.pointerDownPos.x;
+                const dy = event.clientY - this.pointerDownPos.y;
+                const distance = Math.sqrt(dx * dx + dy * dy);
+
+                // Clear the stored position
+                this.pointerDownPos = null;
+
+                // If moved too much, it was a drag (camera movement), not a click
+                if (distance > this.DRAG_THRESHOLD) {
+                    // Don't log on every drag - too noisy
+                    return;
+                }
+
+                // It was a click - handle track placement
+                this.handleCanvasClick(event);
+            });
+
+            // Mousemove for snap preview during placement mode
+            this.canvas.addEventListener('pointermove', (event: PointerEvent) => {
+                this.handlePointerMove(event);
+            });
+
+            // Right-click to cancel placement mode
+            this.canvas.addEventListener('contextmenu', (event: MouseEvent) => {
+                if (this.placementMode) {
+                    event.preventDefault(); // Prevent context menu
+                    this.cancelPlacementMode();
+                }
+            });
+
+            console.log('[App] Pointer events configured');
         } catch (error) {
             console.error('[App] Error setting up pointer events:', error);
-            throw error;
         }
     }
 
     /**
-     * Setup keyboard shortcuts
-     * Handles key presses for camera control, track manipulation, etc.
+     * Handle pointer move for snap preview during placement mode
      */
+    private handlePointerMove(event: PointerEvent): void {
+        // Only handle in placement mode
+        if (!this.placementMode || !this.trackSystem || !this.baseboardSystem) {
+            return;
+        }
+
+        try {
+            // Get board intersection point
+            const rect = this.canvas.getBoundingClientRect();
+            const x = event.clientX - rect.left;
+            const y = event.clientY - rect.top;
+
+            const camera = this.scene.activeCamera;
+            if (!camera) return;
+
+            const ray = this.scene.createPickingRay(x, y, null, camera);
+            const baseboard = this.baseboardSystem.getBaseboard();
+            if (!baseboard) return;
+
+            const intersection = ray.intersectsMesh(baseboard);
+
+            if (intersection.hit && intersection.pickedPoint) {
+                const boardY = this.baseboardSystem.getBoardTopY();
+                const position = new Vector3(
+                    intersection.pickedPoint.x,
+                    boardY,
+                    intersection.pickedPoint.z
+                );
+
+                // Check for snap preview
+                const snapPreview = this.trackSystem.getSnapPreview(
+                    this.placementMode,
+                    position,
+                    Quaternion.Identity()
+                );
+
+                if (snapPreview) {
+                    // Show snap preview indicator
+                    this.trackSystem.showSnapPreview(snapPreview.connectorPos);
+                } else {
+                    // Hide snap preview
+                    this.trackSystem.hideSnapPreview();
+                }
+            } else {
+                // Not over board, hide preview
+                this.trackSystem.hideSnapPreview();
+            }
+        } catch (error) {
+            // Don't log errors on every mouse move
+        }
+    }
+
+    /**
+     * Cancel placement mode and re-enable selection
+     */
+    private cancelPlacementMode(): void {
+        this.placementMode = null;
+
+        if (this.uiManager) {
+            this.uiManager.clearSelection();
+        }
+        if (this.inputManager) {
+            this.inputManager.clearSelection();
+            this.inputManager.setPlacementMode(false);
+        }
+        if (this.trackSystem) {
+            this.trackSystem.hideSnapPreview();
+        }
+
+        console.log('[App] Placement mode cancelled');
+    }
+
+    /**
+     * Rotate the currently selected track piece with smooth animation
+     * @param angleDeg - Angle to rotate in degrees (positive = clockwise)
+     */
+    private rotateSelectedPiece(angleDeg: number): void {
+        try {
+            if (!this.inputManager || !this.trackSystem) {
+                return;
+            }
+
+            const selected = this.inputManager.getSelectedPiece();
+
+            if (!selected) {
+                return;
+            }
+
+            // Get current rotation
+            const currentRotation = selected.transform.rotation.clone();
+
+            // Create rotation around Y axis (up)
+            const additionalRotation = Quaternion.RotationAxis(
+                Vector3.Up(),
+                angleDeg * Math.PI / 180
+            );
+
+            // Calculate target rotation
+            const targetRotation = currentRotation.multiply(additionalRotation);
+
+            // Animate the rotation smoothly
+            this.animateRotation(selected.id, currentRotation, targetRotation);
+
+        } catch (error) {
+            console.error('[App] Error rotating piece:', error);
+        }
+    }
+
+    /**
+     * Animate rotation smoothly from current to target
+     */
+    private animateRotation(pieceId: string, fromRotation: Quaternion, toRotation: Quaternion): void {
+        const duration = 150; // milliseconds
+        const startTime = performance.now();
+
+        const animate = () => {
+            const elapsed = performance.now() - startTime;
+            const progress = Math.min(elapsed / duration, 1);
+
+            // Use smooth easing (ease-out)
+            const eased = 1 - Math.pow(1 - progress, 3);
+
+            // Interpolate rotation
+            const currentRotation = Quaternion.Slerp(fromRotation, toRotation, eased);
+
+            // Apply rotation
+            this.trackSystem?.rotatePiece(pieceId, currentRotation);
+
+            // Continue animation if not complete
+            if (progress < 1) {
+                requestAnimationFrame(animate);
+            }
+        };
+
+        requestAnimationFrame(animate);
+    }
+
+    /**
+     * Handle canvas click for track placement
+     * Only called for actual clicks (not drags)
+     */
+    private handleCanvasClick(event: PointerEvent): void {
+        try {
+            // Only handle left click
+            if (event.button !== 0) return;
+
+            console.log(`[App] Canvas click at (${event.clientX}, ${event.clientY})`);
+            console.log(`[App] Placement mode: ${this.placementMode || 'none'}`);
+
+            // If not in placement mode, ignore
+            if (!this.placementMode) {
+                console.log('[App] Not in placement mode, ignoring click');
+                return;
+            }
+
+            if (!this.trackSystem || !this.baseboardSystem) {
+                console.error('[App] Systems not initialized');
+                return;
+            }
+
+            // Get the baseboard mesh
+            const baseboard = this.baseboardSystem.getBaseboard();
+            if (!baseboard) {
+                console.error('[App] No baseboard mesh');
+                return;
+            }
+
+            // Create picking ray from camera through mouse position
+            const camera = this.scene.activeCamera;
+            if (!camera) {
+                console.error('[App] No active camera');
+                return;
+            }
+
+            // Get canvas-relative coordinates  
+            const rect = this.canvas.getBoundingClientRect();
+            const x = event.clientX - rect.left;
+            const y = event.clientY - rect.top;
+
+            console.log(`[App] Canvas coords: (${x.toFixed(0)}, ${y.toFixed(0)})`);
+            console.log(`[App] Canvas size: ${this.canvas.width} x ${this.canvas.height}`);
+
+            // Create a picking ray from camera through click point
+            const ray = this.scene.createPickingRay(
+                x,
+                y,
+                null,
+                camera
+            );
+
+            console.log(`[App] Ray origin: (${ray.origin.x.toFixed(2)}, ${ray.origin.y.toFixed(2)}, ${ray.origin.z.toFixed(2)})`);
+            console.log(`[App] Ray direction: (${ray.direction.x.toFixed(2)}, ${ray.direction.y.toFixed(2)}, ${ray.direction.z.toFixed(2)})`);
+
+            // Try picking with the ray
+            const pickResult = this.scene.pickWithRay(ray);
+
+            console.log(`[App] Pick result - hit: ${pickResult?.hit}, mesh: ${pickResult?.pickedMesh?.name || 'none'}`);
+
+            if (pickResult?.hit && pickResult.pickedPoint) {
+                console.log(`[App] Pick point: (${pickResult.pickedPoint.x.toFixed(3)}, ${pickResult.pickedPoint.y.toFixed(3)}, ${pickResult.pickedPoint.z.toFixed(3)})`);
+
+                const boardY = this.baseboardSystem.getBoardTopY();
+                const position = new Vector3(
+                    pickResult.pickedPoint.x,
+                    boardY,
+                    pickResult.pickedPoint.z
+                );
+
+                console.log(`[App] Placing ${this.placementMode} at (${position.x.toFixed(3)}, ${position.z.toFixed(3)})`);
+
+                const piece = this.trackSystem.placePiece(
+                    this.placementMode,
+                    position,
+                    Quaternion.Identity()
+                );
+
+                if (piece) {
+                    console.log(`[App] ✓ Placed ${piece.catalogEntry.name}`);
+                } else {
+                    console.warn('[App] Failed to place piece');
+                }
+            } else {
+                console.log('[App] No valid pick point');
+
+                // Debug: Try to intersect with baseboard directly
+                const intersection = ray.intersectsMesh(baseboard);
+                console.log(`[App] Direct baseboard intersection: hit=${intersection.hit}`);
+                if (intersection.hit && intersection.pickedPoint) {
+                    console.log(`[App] Direct intersection point: (${intersection.pickedPoint.x.toFixed(3)}, ${intersection.pickedPoint.y.toFixed(3)}, ${intersection.pickedPoint.z.toFixed(3)})`);
+
+                    // Use this intersection!
+                    const boardY = this.baseboardSystem.getBoardTopY();
+                    const position = new Vector3(
+                        intersection.pickedPoint.x,
+                        boardY,
+                        intersection.pickedPoint.z
+                    );
+
+                    console.log(`[App] Placing via direct intersection at (${position.x.toFixed(3)}, ${position.z.toFixed(3)})`);
+
+                    const piece = this.trackSystem.placePiece(
+                        this.placementMode,
+                        position,
+                        Quaternion.Identity()
+                    );
+
+                    if (piece) {
+                        console.log(`[App] ✓ Placed ${piece.catalogEntry.name}`);
+                    }
+                }
+            }
+        } catch (error) {
+            console.error('[App] Error in handleCanvasClick:', error);
+        }
+    }
+
+    // ========================================================================
+    // KEYBOARD SHORTCUTS
+    // ========================================================================
+
     private setupKeyboardShortcuts(): void {
         try {
-            console.log('[App] Attaching keyboard observable...');
-
             this.scene.onKeyboardObservable.add((kbInfo) => {
+                // Only handle key down events
+                if (kbInfo.type !== 1) return;
+
                 try {
                     const key = kbInfo.event.key.toLowerCase();
-                    console.log('[App] Key pressed:', key);
+                    const shiftKey = kbInfo.event.shiftKey;
 
                     switch (key) {
                         case 'v':
                             // Toggle camera mode
-                            console.log('[App] Toggling camera mode...');
                             if (this.cameraSystem) {
                                 this.cameraSystem.toggleMode();
-                            } else {
-                                console.warn('[App] CameraSystem not available');
                             }
                             break;
 
                         case 'r':
-                            // Reset orbit camera
-                            console.log('[App] Resetting camera...');
-                            if (this.cameraSystem) {
-                                this.cameraSystem.resetOrbitCamera();
-                                console.log('Camera reset');
-                            } else {
-                                console.warn('[App] CameraSystem not available');
+                            // Rotate selected track piece
+                            if (this.inputManager && this.trackSystem) {
+                                const selected = this.inputManager.getSelectedPiece();
+                                if (selected) {
+                                    // Rotate 5° per key press (Shift for larger 22.5° jumps)
+                                    const angle = shiftKey ? 22.5 : 5;
+                                    this.rotateSelectedPiece(angle);
+                                } else {
+                                    // No selection - reset camera instead
+                                    if (this.cameraSystem) {
+                                        this.cameraSystem.resetOrbitCamera();
+                                        console.log('[App] Camera reset');
+                                    }
+                                }
+                            }
+                            break;
+
+                        case 'q':
+                            // Rotate counter-clockwise (Shift for larger jump)
+                            if (this.inputManager?.getSelectedPiece()) {
+                                const angle = shiftKey ? -22.5 : -5;
+                                this.rotateSelectedPiece(angle);
+                            }
+                            break;
+
+                        case 'e':
+                            // Rotate clockwise (Shift for larger jump)
+                            if (this.inputManager?.getSelectedPiece()) {
+                                const angle = shiftKey ? 22.5 : 5;
+                                this.rotateSelectedPiece(angle);
                             }
                             break;
 
                         case 'c':
-                            // Clear all track
-                            console.log('[App] Clearing all track...');
-                            if (this.trackSystem) {
+                            // Clear all track (with Shift to prevent accidents)
+                            if (shiftKey && this.trackSystem) {
                                 this.trackSystem.clear();
-                                console.log('Track cleared');
-                            } else {
-                                console.warn('[App] TrackSystem not available');
+                                console.log('[App] Track cleared');
                             }
                             break;
 
                         case 'escape':
-                            // Cancel placement mode
-                            console.log('[App] Cancelling placement mode...');
-                            this.placementMode = null;
-                            if (this.uiManager) {
-                                this.uiManager.clearSelection();
-                            }
-                            if (this.inputManager) {
+                            // First priority: deselect any selected track
+                            if (this.inputManager?.getSelectedPiece()) {
                                 this.inputManager.clearSelection();
+                                console.log('[App] Track deselected');
                             }
-                            console.log('[App] Cancelled');
+                            // Second priority: cancel placement mode
+                            else if (this.placementMode) {
+                                this.cancelPlacementMode();
+                            }
                             break;
 
                         case 'delete':
                         case 'backspace':
                             // Delete selected piece
-                            console.log('[App] Attempting to delete selected piece...');
                             if (this.inputManager && this.trackSystem) {
                                 const selected = this.inputManager.getSelectedPiece();
                                 if (selected) {
-                                    console.log('[App] Deleting piece:', selected.id);
                                     this.trackSystem.removePiece(selected.id);
                                     this.inputManager.clearSelection();
                                     console.log(`[App] Deleted ${selected.id}`);
-                                } else {
-                                    console.log('[App] No piece selected');
-                                }
-                            } else {
-                                if (!this.inputManager) {
-                                    console.warn('[App] InputManager not available');
-                                }
-                                if (!this.trackSystem) {
-                                    console.warn('[App] TrackSystem not available');
                                 }
                             }
                             break;
 
-                        default:
-                            // Ignore other keys
+                        case 't':
+                            // Place test tracks again
+                            this.placeTestTracks();
+                            break;
+
+                        case 'home':
+                            // Reset camera
+                            if (this.cameraSystem) {
+                                this.cameraSystem.resetOrbitCamera();
+                                console.log('[App] Camera reset');
+                            }
+                            break;
+
+                        case 's':
+                            // Toggle auto-snap (with Shift)
+                            if (shiftKey && this.trackSystem) {
+                                const enabled = !this.trackSystem.isAutoSnapEnabled();
+                                this.trackSystem.setAutoSnap(enabled);
+                                console.log(`[App] Auto-snap ${enabled ? 'enabled' : 'disabled'}`);
+                            }
+                            break;
+
+                        case 'i':
+                            // Toggle connection indicators (with Shift)
+                            if (shiftKey && this.trackSystem) {
+                                // Toggle indicators (we need to track state)
+                                this.toggleConnectionIndicators();
+                            }
                             break;
                     }
                 } catch (error) {
-                    console.error('[App] Error handling keyboard event:', error);
-                    console.error('[App] Key was:', kbInfo.event.key);
+                    console.error('[App] Error handling keyboard:', error);
                 }
             });
 
-            console.log('[App] Keyboard shortcuts configured successfully');
-
+            console.log('[App] Keyboard shortcuts configured');
         } catch (error) {
-            console.error('[App] Error setting up keyboard shortcuts:', error);
-            throw error;
+            console.error('[App] Error setting up keyboard:', error);
         }
     }
 
+    /**
+     * Toggle connection indicator visibility
+     */
+    private toggleConnectionIndicators(): void {
+        this.connectionIndicatorsEnabled = !this.connectionIndicatorsEnabled;
+        if (this.trackSystem) {
+            this.trackSystem.setConnectionIndicators(this.connectionIndicatorsEnabled);
+        }
+        console.log(`[App] Connection indicators ${this.connectionIndicatorsEnabled ? 'enabled' : 'disabled'}`);
+    }
+
     // ========================================================================
-    // Render Loop
+    // RENDER LOOP
     // ========================================================================
 
-    /**
-     * Start the render loop
-     * Begins continuous rendering and sets up window resize handling
-     */
     start(): void {
         try {
             console.log('[App] Starting render loop...');
@@ -659,10 +780,8 @@ export class App {
                 }
             });
 
-            console.log('[App] Setting up window resize handler...');
             window.addEventListener('resize', () => {
                 try {
-                    console.log('[App] Window resized - updating engine');
                     this.engine.resize();
                 } catch (error) {
                     console.error('[App] Resize error:', error);
@@ -670,7 +789,6 @@ export class App {
             });
 
             console.log('✓ Render loop started');
-
         } catch (error) {
             console.error('[App] Error starting render loop:', error);
             throw error;
@@ -678,151 +796,42 @@ export class App {
     }
 
     // ========================================================================
-    // Debug Utilities
+    // ACCESSORS
     // ========================================================================
 
-    /**
-     * Debug: List all pickable meshes in the scene
-     * Useful for diagnosing picking issues
-     */
-    private debugListPickableMeshes(): void {
-        try {
-            console.log('\n=== PICKABLE MESHES ===');
-            let pickableCount = 0;
-            let notPickableCount = 0;
-
-            this.scene.meshes.forEach(mesh => {
-                if (mesh.isPickable) {
-                    console.log(`  ✓ ${mesh.name} (pickable, id: ${mesh.uniqueId})`);
-                    pickableCount++;
-                } else {
-                    console.log(`  ✗ ${mesh.name} (NOT pickable, id: ${mesh.uniqueId})`);
-                    notPickableCount++;
-                }
-            });
-
-            console.log(`\nPickable: ${pickableCount}`);
-            console.log(`Not pickable: ${notPickableCount}`);
-            console.log(`Total meshes: ${this.scene.meshes.length}`);
-            console.log('========================\n');
-
-        } catch (error) {
-            console.error('[App] Error in debugListPickableMeshes:', error);
-        }
-    }
-
-    /**
-     * Debug: Check camera and viewport setup
-     * Verifies camera is properly configured for picking
-     */
-    private debugCameraSetup(): void {
-        try {
-            console.log('\n=== CAMERA DEBUG ===');
-
-            const camera = this.scene.activeCamera;
-            if (camera) {
-                console.log('Active camera:', camera.name);
-                console.log('Camera type:', camera.getClassName());
-                console.log('Camera position:', camera.position);
-
-                const target = (camera as any).target;
-                if (target) {
-                    console.log('Camera target:', target);
-                }
-
-                console.log('Camera viewport:', {
-                    x: camera.viewport.x,
-                    y: camera.viewport.y,
-                    width: camera.viewport.width,
-                    height: camera.viewport.height
-                });
-
-                console.log('Camera mode:', (camera as any).mode);
-
-            } else {
-                console.error('ERROR: No active camera!');
-            }
-
-            console.log('\nCanvas:');
-            console.log('  Client size:', this.canvas.clientWidth, 'x', this.canvas.clientHeight);
-            console.log('  Actual size:', this.canvas.width, 'x', this.canvas.height);
-
-            console.log('\nEngine:');
-            console.log('  Render size:', this.engine.getRenderWidth(), 'x', this.engine.getRenderHeight());
-            console.log('  Hardware scaling:', this.engine.getHardwareScalingLevel());
-
-            console.log('=====================\n');
-
-        } catch (error) {
-            console.error('[App] Error in debugCameraSetup:', error);
-        }
-    }
-
-    // ========================================================================
-    // Getters
-    // ========================================================================
-
-    /**
-     * Get the Babylon.js scene
-     */
     getScene(): Scene {
         return this.scene;
     }
 
-    /**
-     * Get the camera system
-     */
     getCameraSystem(): CameraSystem | null {
         return this.cameraSystem;
     }
 
-    /**
-     * Get the track system
-     */
     getTrackSystem(): TrackSystem | null {
         return this.trackSystem;
     }
 
     // ========================================================================
-    // Cleanup
+    // CLEANUP
     // ========================================================================
 
-    /**
-     * Dispose of all resources
-     * Cleans up all subsystems, scene, and engine
-     */
     dispose(): void {
         try {
-            console.log('[App] Disposing application...');
+            console.log('[App] Disposing...');
 
-            if (this.uiManager) {
-                console.log('[App] Disposing UI manager...');
-                this.uiManager.dispose();
-            }
+            // Remove canvas click handler
+            this.canvas.removeEventListener('click', this.handleCanvasClick.bind(this));
 
-            if (this.inputManager) {
-                console.log('[App] Disposing input manager...');
-                this.inputManager.dispose();
-            }
+            if (this.uiManager) this.uiManager.dispose();
+            if (this.inputManager) this.inputManager.dispose();
+            if (this.trackSystem) this.trackSystem.dispose();
+            if (this.baseboardSystem) this.baseboardSystem.dispose();
+            if (this.cameraSystem) this.cameraSystem.dispose();
 
-            if (this.baseboardSystem) {
-                console.log('[App] Disposing baseboard system...');
-                this.baseboardSystem.dispose();
-            }
-
-            if (this.cameraSystem) {
-                console.log('[App] Disposing camera system...');
-                this.cameraSystem.dispose();
-            }
-
-            console.log('[App] Disposing scene...');
             this.scene.dispose();
-
-            console.log('[App] Disposing engine...');
             this.engine.dispose();
 
-            console.log('[App] Disposed successfully');
-
+            console.log('[App] Disposed');
         } catch (error) {
             console.error('[App] Error disposing:', error);
         }
