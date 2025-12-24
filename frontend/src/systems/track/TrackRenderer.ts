@@ -100,22 +100,22 @@ export class TrackRenderer {
                 // Render straight track
                 meshes.push(...this.renderStraightTrack(startPos, endPos, edge.id));
             } else if (edge.curve.type === 'arc') {
-                // Render curved track
-                if (edge.curve.arcRadiusM && edge.curve.arcAngleDeg) {
-                    // Get the travel direction at start (opposite of connector's outward-facing forward)
-                    const startDirection = connectorA.worldForward
-                        ? connectorA.worldForward.negate()
-                        : endPos.subtract(startPos).normalize();
+                // Render curved track using Hermite spline between actual connector positions
+                // Get travel directions (opposite of connector's outward-facing forward)
+                const startTangent = connectorA.worldForward
+                    ? connectorA.worldForward.negate()
+                    : endPos.subtract(startPos).normalize();
+                const endTangent = connectorB.worldForward
+                    ? connectorB.worldForward.clone()
+                    : endPos.subtract(startPos).normalize();
 
-                    meshes.push(...this.renderCurvedTrack(
-                        startPos,
-                        endPos,
-                        startDirection,
-                        edge.curve.arcRadiusM,
-                        edge.curve.arcAngleDeg,
-                        edge.id
-                    ));
-                }
+                meshes.push(...this.renderCurvedTrack(
+                    startPos,
+                    endPos,
+                    startTangent,
+                    endTangent,
+                    edge.id
+                ));
             }
         } catch (error) {
             console.error(`[TrackRenderer] Error rendering edge ${edge.id}:`, error);
@@ -180,75 +180,75 @@ export class TrackRenderer {
     }
 
     /**
-     * Render curved track section using proper arc geometry
+     * Render curved track section using Hermite spline interpolation.
+     * This ensures the curve passes through the actual start/end positions
+     * with correct tangent directions, regardless of catalog geometry.
      */
     private renderCurvedTrack(
         start: Vector3,
         end: Vector3,
-        startDirection: Vector3,
-        radius: number,
-        angleDeg: number,
+        startTangent: Vector3,
+        endTangent: Vector3,
         edgeId: string
     ): Mesh[] {
         const meshes: Mesh[] = [];
 
         try {
-            const angleRad = (angleDeg * Math.PI) / 180;
+            // Calculate chord length to scale tangents appropriately
+            const chordLength = Vector3.Distance(start, end);
 
-            // Calculate perpendicular directions (left and right of travel direction)
-            // In XZ plane: left is (-z, 0, x), right is (z, 0, -x)
-            const perpLeft = new Vector3(-startDirection.z, 0, startDirection.x).normalize();
-            const perpRight = new Vector3(startDirection.z, 0, -startDirection.x).normalize();
+            // Scale tangents by chord length for smooth interpolation
+            const scaledStartTangent = startTangent.normalize().scale(chordLength);
+            const scaledEndTangent = endTangent.normalize().scale(chordLength);
 
-            // Determine if this is a left or right curve by checking which side the end point is on
-            const toEnd = end.subtract(start);
-            const dotLeft = Vector3.Dot(toEnd, perpLeft);
-            const isLeftCurve = dotLeft > 0;
-
-            // Arc center is perpendicular to start direction at distance = radius
-            const perpDirection = isLeftCurve ? perpLeft : perpRight;
-            const center = start.add(perpDirection.scale(radius));
-
-            // Calculate the start angle (angle from center to start point)
-            const toStart = start.subtract(center);
-            const startAngle = Math.atan2(toStart.z, toStart.x);
-
-            // Sweep direction: left curve sweeps counter-clockwise (+), right curve sweeps clockwise (-)
-            const sweepDirection = isLeftCurve ? 1 : -1;
-
-            // Use more segments for smoother curves (at least 1 segment per 5 degrees)
-            const segments = Math.max(4, Math.ceil(angleDeg / 5));
+            // Use enough segments for smooth curve (more for longer tracks)
+            const segments = Math.max(8, Math.ceil(chordLength / 0.01)); // ~1 segment per cm
 
             for (let i = 0; i < segments; i++) {
                 const t1 = i / segments;
                 const t2 = (i + 1) / segments;
 
-                // Calculate angles for this segment
-                const angle1 = startAngle + sweepDirection * angleRad * t1;
-                const angle2 = startAngle + sweepDirection * angleRad * t2;
-
-                // Calculate positions on the arc
-                const p1 = new Vector3(
-                    center.x + Math.cos(angle1) * radius,
-                    start.y, // Maintain height
-                    center.z + Math.sin(angle1) * radius
-                );
-                const p2 = new Vector3(
-                    center.x + Math.cos(angle2) * radius,
-                    start.y,
-                    center.z + Math.sin(angle2) * radius
-                );
+                // Hermite interpolation for each point
+                const p1 = this.hermiteInterpolate(start, end, scaledStartTangent, scaledEndTangent, t1);
+                const p2 = this.hermiteInterpolate(start, end, scaledStartTangent, scaledEndTangent, t2);
 
                 const segmentMeshes = this.renderStraightTrack(p1, p2, `${edgeId}_seg${i}`);
                 meshes.push(...segmentMeshes);
             }
 
-            console.log(`[TrackRenderer] Rendered curved track with ${segments} segments (radius=${radius.toFixed(3)}m, angle=${angleDeg}°)`);
+            console.log(`[TrackRenderer] Rendered curved track with ${segments} segments`);
         } catch (error) {
             console.error('[TrackRenderer] Error in renderCurvedTrack:', error);
         }
 
         return meshes;
+    }
+
+    /**
+     * Hermite spline interpolation between two points with tangent directions.
+     * Returns position at parameter t (0 to 1).
+     */
+    private hermiteInterpolate(
+        p0: Vector3,
+        p1: Vector3,
+        m0: Vector3,
+        m1: Vector3,
+        t: number
+    ): Vector3 {
+        // Hermite basis functions
+        const t2 = t * t;
+        const t3 = t2 * t;
+
+        const h00 = 2 * t3 - 3 * t2 + 1;  // position at p0
+        const h10 = t3 - 2 * t2 + t;       // tangent at p0
+        const h01 = -2 * t3 + 3 * t2;      // position at p1
+        const h11 = t3 - t2;               // tangent at p1
+
+        return new Vector3(
+            h00 * p0.x + h10 * m0.x + h01 * p1.x + h11 * m1.x,
+            h00 * p0.y + h10 * m0.y + h01 * p1.y + h11 * m1.y,
+            h00 * p0.z + h10 * m0.z + h01 * p1.z + h11 * m1.z
+        );
     }
 
     /**
