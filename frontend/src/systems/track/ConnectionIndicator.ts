@@ -8,9 +8,11 @@
  * - Color-coded based on connection state (connected vs unconnected)
  * - Toggle functionality to show/hide indicators
  * - Updates automatically when track is moved
+ * - Snap preview for placement feedback
+ * - Connection animation for visual confirmation
  * 
- * @author Model Railway Workbench
- * @version 1.1.0
+ * @module ConnectionIndicator
+ * @version 1.2.0
  */
 
 import { Scene } from '@babylonjs/core/scene';
@@ -20,6 +22,12 @@ import { Color3 } from '@babylonjs/core/Maths/math.color';
 import { Vector3 } from '@babylonjs/core/Maths/math.vector';
 import type { Mesh } from '@babylonjs/core/Meshes/mesh';
 import type { TrackPiece, Connector } from './TrackPiece';
+
+// ============================================================================
+// LOGGING PREFIX
+// ============================================================================
+
+const LOG_PREFIX = '[ConnectionIndicator]';
 
 // ============================================================================
 // TYPES AND INTERFACES
@@ -74,14 +82,30 @@ interface IndicatorData {
  * Default configuration values for connection indicators
  */
 const DEFAULT_CONFIG: ConnectionIndicatorConfig = {
-    indicatorRadius: 0.008,      // 8mm radius (visible but not obtrusive)
-    heightOffset: 0.008,          // 8mm above track surface
-    connectedColor: new Color3(0.2, 0.9, 0.2),      // Bright green
-    unconnectedColor: new Color3(1.0, 0.5, 0.0),    // Orange
-    hoverColor: new Color3(0.3, 0.6, 1.0),          // Light blue
-    snapColor: new Color3(0.0, 1.0, 0.5),           // Cyan/bright green
+    indicatorRadius: 0.008,                          // 8mm radius (visible but not obtrusive)
+    heightOffset: 0.008,                             // 8mm above track surface
+    connectedColor: new Color3(0.2, 0.9, 0.2),       // Bright green
+    unconnectedColor: new Color3(1.0, 0.5, 0.0),     // Orange
+    hoverColor: new Color3(0.3, 0.6, 1.0),           // Light blue
+    snapColor: new Color3(0.0, 1.0, 0.5),            // Cyan/bright green
     opacity: 0.9,
 };
+
+/**
+ * Animation configuration
+ */
+const ANIMATION_CONFIG = {
+    /** Duration of connection animation in milliseconds */
+    connectionAnimDuration: 400,
+    /** Initial scale for connection animation */
+    connectionAnimStartScale: 2.0,
+    /** Final scale for connection animation */
+    connectionAnimEndScale: 1.0,
+    /** Snap preview indicator radius */
+    snapPreviewRadius: 0.012,
+    /** Snap preview indicator opacity */
+    snapPreviewOpacity: 0.7,
+} as const;
 
 // ============================================================================
 // CONNECTION INDICATOR CLASS
@@ -93,6 +117,8 @@ const DEFAULT_CONFIG: ConnectionIndicatorConfig = {
  * Provides visual feedback during track building by showing:
  * - Connection points on each track piece
  * - Whether connectors are connected or available
+ * - Snap preview during placement mode
+ * - Animation when connections are made
  * 
  * @example
  * ```typescript
@@ -122,8 +148,20 @@ export class ConnectionIndicator {
     /** Whether indicators are currently visible */
     private _isVisible: boolean = true;
 
+    /** Whether the indicator system is enabled */
+    private _isEnabled: boolean = true;
+
     /** Counter for unique mesh naming */
     private meshCounter: number = 0;
+
+    /** Snap preview indicator mesh */
+    private snapPreviewMesh: Mesh | null = null;
+
+    /** Material for snap preview */
+    private snapPreviewMaterial: StandardMaterial | null = null;
+
+    /** Active connection animations */
+    private activeAnimations: Set<number> = new Set();
 
     // ========================================================================
     // CONSTRUCTOR
@@ -139,7 +177,7 @@ export class ConnectionIndicator {
     constructor(scene: Scene, config?: Partial<ConnectionIndicatorConfig>) {
         // Validate scene parameter
         if (!scene) {
-            throw new Error('[ConnectionIndicator] Scene is required');
+            throw new Error(`${LOG_PREFIX} Scene is required`);
         }
 
         this.scene = scene;
@@ -150,7 +188,10 @@ export class ConnectionIndicator {
             ...config
         };
 
-        console.log('[ConnectionIndicator] Created');
+        // Auto-initialize materials
+        this.createMaterials();
+
+        console.log(`${LOG_PREFIX} Created`);
     }
 
     // ========================================================================
@@ -163,16 +204,59 @@ export class ConnectionIndicator {
      */
     initialize(): void {
         try {
-            console.log('[ConnectionIndicator] Initializing...');
+            console.log(`${LOG_PREFIX} Initializing...`);
 
-            // Create shared materials for each connection state
-            this.createMaterials();
+            // Materials are created in constructor, but ensure they exist
+            if (this.materials.size === 0) {
+                this.createMaterials();
+            }
 
-            console.log('✓ Connection indicator system initialized');
+            // Create snap preview mesh (hidden by default)
+            this.createSnapPreviewMesh();
+
+            console.log(`${LOG_PREFIX} ✓ Initialized`);
         } catch (error) {
-            console.error('[ConnectionIndicator] Failed to initialize:', error);
+            console.error(`${LOG_PREFIX} Failed to initialize:`, error);
             throw error;
         }
+    }
+
+    // ========================================================================
+    // PUBLIC METHODS - ENABLE/DISABLE
+    // ========================================================================
+
+    /**
+     * Enable or disable the indicator system
+     * When disabled, all indicators are hidden and not updated
+     * 
+     * @param enabled - Whether the system should be enabled
+     */
+    setEnabled(enabled: boolean): void {
+        try {
+            this._isEnabled = enabled;
+
+            if (enabled) {
+                // Re-show indicators if they were visible before
+                this.setVisibility(this._isVisible);
+            } else {
+                // Hide all indicators when disabled
+                this.setVisibility(false);
+                this.hideSnapPreview();
+            }
+
+            console.log(`${LOG_PREFIX} ${enabled ? 'Enabled' : 'Disabled'}`);
+        } catch (error) {
+            console.error(`${LOG_PREFIX} Error setting enabled state:`, error);
+        }
+    }
+
+    /**
+     * Check if the indicator system is enabled
+     * 
+     * @returns Current enabled state
+     */
+    isEnabled(): boolean {
+        return this._isEnabled;
     }
 
     // ========================================================================
@@ -189,10 +273,10 @@ export class ConnectionIndicator {
             this._isVisible = !this._isVisible;
             this.setVisibility(this._isVisible);
 
-            console.log(`[ConnectionIndicator] Visibility toggled: ${this._isVisible ? 'VISIBLE' : 'HIDDEN'}`);
+            console.log(`${LOG_PREFIX} Visibility toggled: ${this._isVisible ? 'VISIBLE' : 'HIDDEN'}`);
             return this._isVisible;
         } catch (error) {
-            console.error('[ConnectionIndicator] Error toggling visibility:', error);
+            console.error(`${LOG_PREFIX} Error toggling visibility:`, error);
             return this._isVisible;
         }
     }
@@ -206,18 +290,21 @@ export class ConnectionIndicator {
         try {
             this._isVisible = visible;
 
+            // Don't show if system is disabled
+            const actuallyVisible = visible && this._isEnabled;
+
             // Update all indicator meshes
             for (const indicators of this.indicators.values()) {
                 for (const indicator of indicators) {
                     if (indicator.mesh) {
-                        indicator.mesh.isVisible = visible;
+                        indicator.mesh.isVisible = actuallyVisible;
                     }
                 }
             }
 
-            console.log(`[ConnectionIndicator] Set visibility: ${visible}`);
+            console.log(`${LOG_PREFIX} Set visibility: ${visible}`);
         } catch (error) {
-            console.error('[ConnectionIndicator] Error setting visibility:', error);
+            console.error(`${LOG_PREFIX} Error setting visibility:`, error);
         }
     }
 
@@ -241,7 +328,131 @@ export class ConnectionIndicator {
      * @returns Current visibility state
      */
     isVisible(): boolean {
-        return this._isVisible;
+        return this._isVisible && this._isEnabled;
+    }
+
+    // ========================================================================
+    // PUBLIC METHODS - SNAP PREVIEW
+    // ========================================================================
+
+    /**
+     * Show the snap preview indicator at a position
+     * Used to show where a piece will snap to during placement mode
+     * 
+     * @param position - World position to show the preview at
+     */
+    showSnapPreview(position: Vector3): void {
+        try {
+            if (!this._isEnabled) return;
+
+            // Create snap preview mesh if it doesn't exist
+            if (!this.snapPreviewMesh) {
+                this.createSnapPreviewMesh();
+            }
+
+            if (this.snapPreviewMesh) {
+                this.snapPreviewMesh.position = position.add(
+                    new Vector3(0, this.config.heightOffset * 1.5, 0)
+                );
+                this.snapPreviewMesh.isVisible = true;
+            }
+        } catch (error) {
+            console.error(`${LOG_PREFIX} Error showing snap preview:`, error);
+        }
+    }
+
+    /**
+     * Hide the snap preview indicator
+     */
+    hideSnapPreview(): void {
+        try {
+            if (this.snapPreviewMesh) {
+                this.snapPreviewMesh.isVisible = false;
+            }
+        } catch (error) {
+            console.error(`${LOG_PREFIX} Error hiding snap preview:`, error);
+        }
+    }
+
+    // ========================================================================
+    // PUBLIC METHODS - CONNECTION ANIMATION
+    // ========================================================================
+
+    /**
+     * Play a connection animation at a position
+     * Provides visual feedback when a connection is made
+     * 
+     * @param position - World position where connection occurred
+     */
+    playConnectionAnimation(position: Vector3): void {
+        try {
+            if (!this._isEnabled) return;
+
+            // Create a temporary animated sphere
+            const animMesh = MeshBuilder.CreateSphere(
+                `connection_anim_${this.meshCounter++}`,
+                {
+                    diameter: this.config.indicatorRadius * 2 * ANIMATION_CONFIG.connectionAnimStartScale,
+                    segments: 16
+                },
+                this.scene
+            );
+
+            if (!animMesh) {
+                console.warn(`${LOG_PREFIX} Failed to create animation mesh`);
+                return;
+            }
+
+            // Position the animation mesh
+            animMesh.position = position.add(new Vector3(0, this.config.heightOffset, 0));
+
+            // Create a bright material for the animation
+            const animMaterial = new StandardMaterial(`connection_anim_mat_${this.meshCounter}`, this.scene);
+            animMaterial.diffuseColor = this.config.connectedColor;
+            animMaterial.emissiveColor = this.config.connectedColor.scale(0.8);
+            animMaterial.alpha = 1.0;
+            animMaterial.backFaceCulling = false;
+            animMesh.material = animMaterial;
+
+            // Make it visible but not pickable
+            animMesh.isPickable = false;
+            animMesh.isVisible = true;
+
+            // Animate scale and opacity
+            const startTime = performance.now();
+            const duration = ANIMATION_CONFIG.connectionAnimDuration;
+            const startScale = ANIMATION_CONFIG.connectionAnimStartScale;
+            const endScale = ANIMATION_CONFIG.connectionAnimEndScale;
+
+            const animationId = requestAnimationFrame(function animate(currentTime: number) {
+                const elapsed = currentTime - startTime;
+                const progress = Math.min(elapsed / duration, 1.0);
+
+                // Ease-out curve for smooth animation
+                const easedProgress = 1 - Math.pow(1 - progress, 3);
+
+                // Interpolate scale (shrinking)
+                const currentScale = startScale + (endScale - startScale) * easedProgress;
+                animMesh.scaling.setAll(currentScale);
+
+                // Fade out
+                animMaterial.alpha = 1.0 - easedProgress;
+
+                if (progress < 1.0) {
+                    requestAnimationFrame(animate);
+                } else {
+                    // Animation complete - clean up
+                    animMesh.dispose();
+                    animMaterial.dispose();
+                }
+            });
+
+            // Track active animation for potential cleanup
+            this.activeAnimations.add(animationId);
+
+        } catch (error) {
+            console.error(`${LOG_PREFIX} Error playing connection animation:`, error);
+        }
     }
 
     // ========================================================================
@@ -257,9 +468,12 @@ export class ConnectionIndicator {
     updateIndicators(pieces: TrackPiece[]): void {
         try {
             if (!pieces || !Array.isArray(pieces)) {
-                console.warn('[ConnectionIndicator] updateIndicators: Invalid pieces array');
+                console.warn(`${LOG_PREFIX} updateIndicators: Invalid pieces array`);
                 return;
             }
+
+            // Don't update if disabled
+            if (!this._isEnabled) return;
 
             // Build a set of all connected node IDs
             // A node is "connected" if more than one connector references it
@@ -308,7 +522,7 @@ export class ConnectionIndicator {
             }
 
         } catch (error) {
-            console.error('[ConnectionIndicator] Error updating indicators:', error);
+            console.error(`${LOG_PREFIX} Error updating indicators:`, error);
         }
     }
 
@@ -320,13 +534,13 @@ export class ConnectionIndicator {
     addPieceIndicators(piece: TrackPiece): void {
         try {
             if (!piece) {
-                console.warn('[ConnectionIndicator] addPieceIndicators: Piece is null');
+                console.warn(`${LOG_PREFIX} addPieceIndicators: Piece is null`);
                 return;
             }
 
             this.updatePieceIndicators(piece, new Set());
         } catch (error) {
-            console.error(`[ConnectionIndicator] Error adding indicators for piece ${piece?.id}:`, error);
+            console.error(`${LOG_PREFIX} Error adding indicators for piece ${piece?.id}:`, error);
         }
     }
 
@@ -338,7 +552,7 @@ export class ConnectionIndicator {
     removePieceIndicators(pieceId: string): void {
         try {
             if (!pieceId) {
-                console.warn('[ConnectionIndicator] removePieceIndicators: pieceId is required');
+                console.warn(`${LOG_PREFIX} removePieceIndicators: pieceId is required`);
                 return;
             }
 
@@ -355,7 +569,7 @@ export class ConnectionIndicator {
             // Remove from map
             this.indicators.delete(pieceId);
         } catch (error) {
-            console.error(`[ConnectionIndicator] Error removing indicators for piece ${pieceId}:`, error);
+            console.error(`${LOG_PREFIX} Error removing indicators for piece ${pieceId}:`, error);
         }
     }
 
@@ -385,7 +599,7 @@ export class ConnectionIndicator {
                 indicator.mesh.material = material;
             }
         } catch (error) {
-            console.error('[ConnectionIndicator] Error setting connector state:', error);
+            console.error(`${LOG_PREFIX} Error setting connector state:`, error);
         }
     }
 
@@ -414,7 +628,7 @@ export class ConnectionIndicator {
                 }
             }
         } catch (error) {
-            console.error('[ConnectionIndicator] Error highlighting snap candidates:', error);
+            console.error(`${LOG_PREFIX} Error highlighting snap candidates:`, error);
         }
     }
 
@@ -457,7 +671,7 @@ export class ConnectionIndicator {
                 }
             }
         } catch (error) {
-            console.error('[ConnectionIndicator] Error clearing snap highlighting:', error);
+            console.error(`${LOG_PREFIX} Error clearing snap highlighting:`, error);
         }
     }
 
@@ -494,9 +708,9 @@ export class ConnectionIndicator {
                 this.createMaterials();
             }
 
-            console.log('[ConnectionIndicator] Configuration updated');
+            console.log(`${LOG_PREFIX} Configuration updated`);
         } catch (error) {
-            console.error('[ConnectionIndicator] Error updating config:', error);
+            console.error(`${LOG_PREFIX} Error updating config:`, error);
         }
     }
 
@@ -509,9 +723,13 @@ export class ConnectionIndicator {
                 this.removePieceIndicators(pieceId);
             }
             this.indicators.clear();
-            console.log('[ConnectionIndicator] All indicators cleared');
+
+            // Hide snap preview
+            this.hideSnapPreview();
+
+            console.log(`${LOG_PREFIX} All indicators cleared`);
         } catch (error) {
-            console.error('[ConnectionIndicator] Error clearing indicators:', error);
+            console.error(`${LOG_PREFIX} Error clearing indicators:`, error);
         }
     }
 
@@ -521,17 +739,30 @@ export class ConnectionIndicator {
      */
     dispose(): void {
         try {
-            console.log('[ConnectionIndicator] Disposing...');
+            console.log(`${LOG_PREFIX} Disposing...`);
 
             // Clear all indicators
             this.clear();
 
+            // Dispose snap preview
+            if (this.snapPreviewMesh) {
+                this.snapPreviewMesh.dispose();
+                this.snapPreviewMesh = null;
+            }
+            if (this.snapPreviewMaterial) {
+                this.snapPreviewMaterial.dispose();
+                this.snapPreviewMaterial = null;
+            }
+
             // Dispose materials
             this.disposeMaterials();
 
-            console.log('[ConnectionIndicator] Disposed');
+            // Clear active animations (they'll clean themselves up)
+            this.activeAnimations.clear();
+
+            console.log(`${LOG_PREFIX} Disposed`);
         } catch (error) {
-            console.error('[ConnectionIndicator] Error disposing:', error);
+            console.error(`${LOG_PREFIX} Error disposing:`, error);
         }
     }
 
@@ -577,9 +808,9 @@ export class ConnectionIndicator {
             snapMat.backFaceCulling = false;
             this.materials.set('snapping', snapMat);
 
-            console.log('[ConnectionIndicator] Materials created');
+            console.log(`${LOG_PREFIX} Materials created`);
         } catch (error) {
-            console.error('[ConnectionIndicator] Error creating materials:', error);
+            console.error(`${LOG_PREFIX} Error creating materials:`, error);
             throw error;
         }
     }
@@ -594,7 +825,43 @@ export class ConnectionIndicator {
             }
             this.materials.clear();
         } catch (error) {
-            console.error('[ConnectionIndicator] Error disposing materials:', error);
+            console.error(`${LOG_PREFIX} Error disposing materials:`, error);
+        }
+    }
+
+    // ========================================================================
+    // PRIVATE METHODS - SNAP PREVIEW
+    // ========================================================================
+
+    /**
+     * Create the snap preview mesh
+     */
+    private createSnapPreviewMesh(): void {
+        try {
+            // Create material for snap preview
+            this.snapPreviewMaterial = new StandardMaterial('connIndicator_snapPreview', this.scene);
+            this.snapPreviewMaterial.diffuseColor = this.config.snapColor;
+            this.snapPreviewMaterial.emissiveColor = this.config.snapColor.scale(0.7);
+            this.snapPreviewMaterial.alpha = ANIMATION_CONFIG.snapPreviewOpacity;
+            this.snapPreviewMaterial.backFaceCulling = false;
+
+            // Create the mesh (a slightly larger, pulsing sphere)
+            this.snapPreviewMesh = MeshBuilder.CreateSphere(
+                'snapPreview',
+                {
+                    diameter: ANIMATION_CONFIG.snapPreviewRadius * 2,
+                    segments: 16
+                },
+                this.scene
+            );
+
+            this.snapPreviewMesh.material = this.snapPreviewMaterial;
+            this.snapPreviewMesh.isVisible = false;
+            this.snapPreviewMesh.isPickable = false;
+
+            console.log(`${LOG_PREFIX} Snap preview mesh created`);
+        } catch (error) {
+            console.error(`${LOG_PREFIX} Error creating snap preview mesh:`, error);
         }
     }
 
@@ -660,7 +927,7 @@ export class ConnectionIndicator {
                 }
             }
         } catch (error) {
-            console.error(`[ConnectionIndicator] Error updating piece indicators for ${piece.id}:`, error);
+            console.error(`${LOG_PREFIX} Error updating piece indicators for ${piece.id}:`, error);
         }
     }
 
@@ -679,7 +946,7 @@ export class ConnectionIndicator {
     ): IndicatorData | null {
         try {
             if (!connector.worldPos) {
-                console.warn(`[ConnectionIndicator] Connector ${connector.id} has no worldPos`);
+                console.warn(`${LOG_PREFIX} Connector ${connector.id} has no worldPos`);
                 return null;
             }
 
@@ -705,8 +972,8 @@ export class ConnectionIndicator {
                 mesh.material = material;
             }
 
-            // Set visibility
-            mesh.isVisible = this._isVisible;
+            // Set visibility based on current state
+            mesh.isVisible = this._isVisible && this._isEnabled;
 
             // Make indicator non-pickable (don't interfere with track selection)
             mesh.isPickable = false;
@@ -722,7 +989,7 @@ export class ConnectionIndicator {
 
             return indicatorData;
         } catch (error) {
-            console.error(`[ConnectionIndicator] Error creating indicator for ${connector.id}:`, error);
+            console.error(`${LOG_PREFIX} Error creating indicator for ${connector.id}:`, error);
             return null;
         }
     }
@@ -744,7 +1011,7 @@ export class ConnectionIndicator {
                 );
             }
         } catch (error) {
-            console.error('[ConnectionIndicator] Error updating indicator position:', error);
+            console.error(`${LOG_PREFIX} Error updating indicator position:`, error);
         }
     }
 
@@ -759,7 +1026,7 @@ export class ConnectionIndicator {
                 indicator.mesh.dispose();
             }
         } catch (error) {
-            console.error('[ConnectionIndicator] Error disposing indicator:', error);
+            console.error(`${LOG_PREFIX} Error disposing indicator:`, error);
         }
     }
 }
