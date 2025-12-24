@@ -1,6 +1,8 @@
 ﻿/**
  * App.ts - Application with UI sidebar and mouse interaction
  * 
+ * Path: frontend/src/core/App.ts
+ * 
  * Main application controller that initializes all systems
  * and coordinates track placement testing.
  * 
@@ -42,7 +44,6 @@ export class App {
     private inputManager: InputManager | null = null;
 
     private placementMode: string | null = null;
-    private connectionIndicatorsEnabled: boolean = true;
 
     // ========================================================================
     // CONSTRUCTOR
@@ -122,6 +123,9 @@ export class App {
                 this.onTrackSelected(catalogId);
             });
 
+            // Register toggle callbacks
+            this.setupUIToggles();
+
             // Initialize input manager
             console.log('[App] Initializing input manager...');
             this.inputManager = new InputManager(
@@ -160,7 +164,7 @@ export class App {
             console.log('================');
             console.log('');
             console.log('Connection indicators:');
-            console.log('  🟡 Yellow = Available connector');
+            console.log('  🟠 Orange = Available connector');
             console.log('  🟢 Green = Connected');
             console.log('  🔵 Blue = Snap preview');
 
@@ -168,6 +172,29 @@ export class App {
             console.error('[App] Initialization error:', error);
             throw error;
         }
+    }
+
+    /**
+     * Setup UI toggle button callbacks
+     */
+    private setupUIToggles(): void {
+        if (!this.uiManager || !this.trackSystem) return;
+
+        // Connection Indicators toggle
+        this.uiManager.registerToggleCallback('connectionIndicators', (enabled) => {
+            if (this.trackSystem) {
+                this.trackSystem.setConnectionIndicators(enabled);
+            }
+        });
+
+        // Auto-Snap toggle
+        this.uiManager.registerToggleCallback('autoSnap', (enabled) => {
+            if (this.trackSystem) {
+                this.trackSystem.setAutoSnap(enabled);
+            }
+        });
+
+        console.log('[App] UI toggle callbacks registered');
     }
 
     /**
@@ -728,17 +755,25 @@ export class App {
                         case 's':
                             // Toggle auto-snap (with Shift)
                             if (shiftKey && this.trackSystem) {
-                                const enabled = !this.trackSystem.isAutoSnapEnabled();
-                                this.trackSystem.setAutoSnap(enabled);
-                                console.log(`[App] Auto-snap ${enabled ? 'enabled' : 'disabled'}`);
+                                const enabled = this.trackSystem.toggleConnectionIndicators();
+                                // Also update UI toggle to stay in sync
+                                if (this.uiManager) {
+                                    // For auto-snap, we need different logic
+                                    const autoSnapEnabled = !this.trackSystem.isAutoSnapEnabled();
+                                    this.trackSystem.setAutoSnap(autoSnapEnabled);
+                                    this.uiManager.setToggleState('autoSnap', autoSnapEnabled);
+                                }
                             }
                             break;
 
                         case 'i':
                             // Toggle connection indicators (with Shift)
                             if (shiftKey && this.trackSystem) {
-                                // Toggle indicators (we need to track state)
-                                this.toggleConnectionIndicators();
+                                const enabled = this.trackSystem.toggleConnectionIndicators();
+                                // Update UI toggle to stay in sync
+                                if (this.uiManager) {
+                                    this.uiManager.setToggleState('connectionIndicators', enabled);
+                                }
                             }
                             break;
                     }
@@ -751,17 +786,6 @@ export class App {
         } catch (error) {
             console.error('[App] Error setting up keyboard:', error);
         }
-    }
-
-    /**
-     * Toggle connection indicator visibility
-     */
-    private toggleConnectionIndicators(): void {
-        this.connectionIndicatorsEnabled = !this.connectionIndicatorsEnabled;
-        if (this.trackSystem) {
-            this.trackSystem.setConnectionIndicators(this.connectionIndicatorsEnabled);
-        }
-        console.log(`[App] Connection indicators ${this.connectionIndicatorsEnabled ? 'enabled' : 'disabled'}`);
     }
 
     // ========================================================================

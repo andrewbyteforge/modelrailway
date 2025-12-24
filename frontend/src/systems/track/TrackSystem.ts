@@ -1,6 +1,8 @@
 /**
  * TrackSystem.ts - Main track subsystem coordinator
  * 
+ * Path: frontend/src/systems/track/TrackSystem.ts
+ * 
  * Manages:
  * - Track catalog initialization
  * - Track graph (nodes and edges)
@@ -97,6 +99,9 @@ export class TrackSystem {
     /** Auto-snap enabled flag */
     private autoSnapEnabled: boolean = true;
 
+    /** Connection indicators enabled flag */
+    private connectionIndicatorsEnabled: boolean = true;
+
     // ========================================================================
     // CONSTRUCTOR & INITIALIZATION
     // ========================================================================
@@ -133,17 +138,25 @@ export class TrackSystem {
             // Initialize track catalog with Hornby specifications
             TrackCatalog.initialize();
 
+            // Initialize connection indicator system
+            this.connectionIndicator.initialize();
+
             const specs = TrackCatalog.getHornbySpecs();
             console.log('✓ Track system initialized');
             console.log(`  Hornby OO Gauge: R1=${specs.R1_MM}mm, R2=${specs.R2_MM}mm`);
             console.log(`  Track gauge: ${specs.GAUGE_MM}mm`);
             console.log(`  Auto-snap: ${this.autoSnapEnabled ? 'enabled' : 'disabled'}`);
+            console.log(`  Connection indicators: ${this.connectionIndicatorsEnabled ? 'enabled' : 'disabled'}`);
 
         } catch (error) {
             console.error('[TrackSystem] Failed to initialize:', error);
             throw error;
         }
     }
+
+    // ========================================================================
+    // TOGGLE SETTINGS
+    // ========================================================================
 
     /**
      * Enable or disable auto-snap functionality
@@ -162,11 +175,31 @@ export class TrackSystem {
     }
 
     /**
-     * Enable or disable connection indicators
+     * Enable or disable connection indicators (the colored balls at connectors)
      * @param enabled - Whether indicators should be visible
      */
     setConnectionIndicators(enabled: boolean): void {
+        this.connectionIndicatorsEnabled = enabled;
         this.connectionIndicator.setEnabled(enabled);
+        console.log(`[TrackSystem] Connection indicators ${enabled ? 'enabled' : 'disabled'}`);
+    }
+
+    /**
+     * Toggle connection indicators on/off
+     * @returns The new enabled state
+     */
+    toggleConnectionIndicators(): boolean {
+        this.connectionIndicatorsEnabled = !this.connectionIndicatorsEnabled;
+        this.connectionIndicator.setEnabled(this.connectionIndicatorsEnabled);
+        console.log(`[TrackSystem] Connection indicators ${this.connectionIndicatorsEnabled ? 'enabled' : 'disabled'}`);
+        return this.connectionIndicatorsEnabled;
+    }
+
+    /**
+     * Check if connection indicators are enabled
+     */
+    areConnectionIndicatorsEnabled(): boolean {
+        return this.connectionIndicatorsEnabled;
     }
 
     // ========================================================================

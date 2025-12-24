@@ -1,10 +1,13 @@
 /**
  * UIManager.ts - Manages UI elements (track palette, toolbar, mode indicators)
  * 
+ * Path: frontend/src/ui/UIManager.ts
+ * 
  * Provides:
  * - Track piece selection palette organized by type
  * - Visual feedback for selected pieces
  * - Mode and status indicators
+ * - Toggle buttons for features (connection indicators, auto-snap)
  * - Keyboard shortcut hints
  * 
  * @module UIManager
@@ -22,6 +25,11 @@ import { TrackCatalog, type TrackCatalogEntry } from '../systems/track/TrackCata
 export type TrackSelectionCallback = (catalogId: string) => void;
 
 /**
+ * Callback for toggle button state changes
+ */
+export type ToggleCallback = (enabled: boolean) => void;
+
+/**
  * UI color scheme
  */
 const UI_COLORS = {
@@ -33,6 +41,8 @@ const UI_COLORS = {
     DEFAULT_BORDER: '#ccc',
     HEADER_BG: '#333',
     SECTION_TITLE: '#555',
+    TOGGLE_ON: '#4CAF50',
+    TOGGLE_OFF: '#999',
 } as const;
 
 // ============================================================================
@@ -60,11 +70,23 @@ export class UIManager {
     /** Help panel */
     private helpPanel: HTMLElement | null = null;
 
+    /** Settings panel */
+    private settingsPanel: HTMLElement | null = null;
+
     /** Currently selected catalog ID */
     private selectedCatalogId: string | null = null;
 
     /** Callback for track selection */
     private onTrackSelected: TrackSelectionCallback | null = null;
+
+    /** Toggle button references */
+    private toggleButtons: Map<string, HTMLButtonElement> = new Map();
+
+    /** Toggle callbacks */
+    private toggleCallbacks: Map<string, ToggleCallback> = new Map();
+
+    /** Toggle states */
+    private toggleStates: Map<string, boolean> = new Map();
 
     // ========================================================================
     // CONSTRUCTOR & INITIALIZATION
@@ -90,11 +112,207 @@ export class UIManager {
     initialize(onTrackSelected: TrackSelectionCallback): void {
         try {
             this.onTrackSelected = onTrackSelected;
+            this.createSettingsPanel();
             this.createTrackPalette();
             this.createHelpPanel();
             console.log('[UIManager] Initialized');
         } catch (error) {
             console.error('[UIManager] Error initializing:', error);
+        }
+    }
+
+    // ========================================================================
+    // SETTINGS PANEL (with toggle buttons)
+    // ========================================================================
+
+    /**
+     * Create the settings panel with toggle buttons
+     */
+    private createSettingsPanel(): void {
+        try {
+            this.settingsPanel = document.createElement('div');
+            this.settingsPanel.id = 'settings-panel';
+            this.settingsPanel.style.cssText = `
+                position: fixed;
+                top: 20px;
+                left: 20px;
+                width: 200px;
+                background: rgba(255, 255, 255, 0.98);
+                border: 2px solid #333;
+                border-radius: 8px;
+                padding: 12px;
+                box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+                font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+                z-index: 1000;
+            `;
+
+            // Title
+            const title = document.createElement('h3');
+            title.textContent = '⚙️ Settings';
+            title.style.cssText = `
+                margin: 0 0 12px 0;
+                font-size: 14px;
+                font-weight: bold;
+                color: #333;
+                border-bottom: 2px solid #666;
+                padding-bottom: 6px;
+            `;
+            this.settingsPanel.appendChild(title);
+
+            // Connection Indicators Toggle
+            this.createToggleButton(
+                this.settingsPanel,
+                'connectionIndicators',
+                '🔴 Connection Indicators',
+                true,
+                'Show colored balls at track connection points'
+            );
+
+            // Auto-Snap Toggle
+            this.createToggleButton(
+                this.settingsPanel,
+                'autoSnap',
+                '🧲 Auto-Snap',
+                true,
+                'Automatically snap track pieces together'
+            );
+
+            this.container.appendChild(this.settingsPanel);
+            console.log('[UIManager] Settings panel created');
+        } catch (error) {
+            console.error('[UIManager] Error creating settings panel:', error);
+        }
+    }
+
+    /**
+     * Create a toggle button
+     */
+    private createToggleButton(
+        parent: HTMLElement,
+        id: string,
+        label: string,
+        defaultState: boolean,
+        tooltip: string
+    ): void {
+        const wrapper = document.createElement('div');
+        wrapper.style.cssText = `
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 10px;
+            padding: 8px;
+            background: #f5f5f5;
+            border-radius: 6px;
+        `;
+        wrapper.title = tooltip;
+
+        // Label
+        const labelEl = document.createElement('span');
+        labelEl.textContent = label;
+        labelEl.style.cssText = `
+            font-size: 12px;
+            color: #333;
+            flex: 1;
+        `;
+
+        // Toggle button (styled as a switch)
+        const button = document.createElement('button');
+        button.id = `toggle-${id}`;
+        button.setAttribute('aria-pressed', String(defaultState));
+        button.setAttribute('role', 'switch');
+
+        // Store initial state
+        this.toggleStates.set(id, defaultState);
+
+        // Apply initial style
+        this.updateToggleStyle(button, defaultState);
+
+        // Click handler
+        button.addEventListener('click', () => {
+            const currentState = this.toggleStates.get(id) || false;
+            const newState = !currentState;
+
+            this.toggleStates.set(id, newState);
+            this.updateToggleStyle(button, newState);
+            button.setAttribute('aria-pressed', String(newState));
+
+            // Call callback if registered
+            const callback = this.toggleCallbacks.get(id);
+            if (callback) {
+                callback(newState);
+            }
+
+            console.log(`[UIManager] Toggle ${id}: ${newState ? 'ON' : 'OFF'}`);
+        });
+
+        // Store reference
+        this.toggleButtons.set(id, button);
+
+        wrapper.appendChild(labelEl);
+        wrapper.appendChild(button);
+        parent.appendChild(wrapper);
+    }
+
+    /**
+     * Update toggle button visual style
+     */
+    private updateToggleStyle(button: HTMLButtonElement, isOn: boolean): void {
+        button.style.cssText = `
+            width: 44px;
+            height: 24px;
+            border-radius: 12px;
+            border: none;
+            cursor: pointer;
+            position: relative;
+            transition: all 0.2s ease;
+            background: ${isOn ? UI_COLORS.TOGGLE_ON : UI_COLORS.TOGGLE_OFF};
+        `;
+
+        // Create or update the toggle knob
+        button.innerHTML = `
+            <span style="
+                position: absolute;
+                top: 2px;
+                left: ${isOn ? '22px' : '2px'};
+                width: 20px;
+                height: 20px;
+                background: white;
+                border-radius: 50%;
+                transition: left 0.2s ease;
+                box-shadow: 0 1px 3px rgba(0,0,0,0.3);
+            "></span>
+        `;
+    }
+
+    /**
+     * Register a callback for a toggle button
+     * @param id - Toggle button ID
+     * @param callback - Function to call when toggled
+     */
+    registerToggleCallback(id: string, callback: ToggleCallback): void {
+        this.toggleCallbacks.set(id, callback);
+    }
+
+    /**
+     * Get the current state of a toggle
+     * @param id - Toggle button ID
+     * @returns Current state (true = on, false = off)
+     */
+    getToggleState(id: string): boolean {
+        return this.toggleStates.get(id) || false;
+    }
+
+    /**
+     * Set the state of a toggle programmatically
+     * @param id - Toggle button ID
+     * @param state - New state
+     */
+    setToggleState(id: string, state: boolean): void {
+        const button = this.toggleButtons.get(id);
+        if (button) {
+            this.toggleStates.set(id, state);
+            this.updateToggleStyle(button, state);
+            button.setAttribute('aria-pressed', String(state));
         }
     }
 
@@ -386,11 +604,18 @@ export class UIManager {
                     <span style="color: #aaa;">[DEL]</span> Delete selected<br>
                     <span style="color: #aaa;">[ESC]</span> Cancel placement<br>
                     <span style="color: #aaa;">[V]</span> Toggle camera<br>
+                    <span style="color: #aaa;">[Shift+I]</span> Toggle indicators<br>
+                    <span style="color: #aaa;">[Shift+S]</span> Toggle auto-snap<br>
                     <span style="color: #aaa;">[Shift+C]</span> Clear all track
                 </div>
                 <div style="margin-top: 10px; padding-top: 8px; border-top: 1px solid #444;">
                     <span style="color: #888;">Hornby OO Gauge</span><br>
                     <span style="color: #666; font-size: 10px;">R1=371mm R2=438mm</span>
+                </div>
+                <div style="margin-top: 8px; padding-top: 8px; border-top: 1px solid #444;">
+                    <span style="color: #888;">Indicator Colors:</span><br>
+                    <span style="color: #ff8000;">🟠</span> Available<br>
+                    <span style="color: #00ff00;">🟢</span> Connected
                 </div>
             `;
 
@@ -468,6 +693,13 @@ export class UIManager {
                 this.helpPanel.remove();
                 this.helpPanel = null;
             }
+            if (this.settingsPanel) {
+                this.settingsPanel.remove();
+                this.settingsPanel = null;
+            }
+            this.toggleButtons.clear();
+            this.toggleCallbacks.clear();
+            this.toggleStates.clear();
             console.log('[UIManager] Disposed');
         } catch (error) {
             console.error('[UIManager] Error disposing:', error);
