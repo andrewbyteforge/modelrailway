@@ -920,8 +920,9 @@ export class TrackRenderer {
 
             if (!frog) return null;
 
+            // Position frog at rail height (on top of ballast + sleepers)
             frog.position = frogPoint.position.clone();
-            frog.position.y += TRACK_VISUALS.RAIL_HEIGHT / 2;
+            frog.position.y += TRACK_VISUALS.BALLAST_HEIGHT + TRACK_VISUALS.SLEEPER_HEIGHT + TRACK_VISUALS.RAIL_HEIGHT / 2;
 
             // Rotate to align with track
             const angle = Math.atan2(frogPoint.forward.z, frogPoint.forward.x);
@@ -1024,8 +1025,10 @@ export class TrackRenderer {
                 if (!straightPt) continue;
 
                 // Left edge follows straight route's left side
+                // Left edge follows straight route's left side
+                // Position ballast ON TOP of board surface
                 const leftPos = straightPt.position.add(straightPt.right.scale(-halfWidth));
-                leftPos.y -= TRACK_VISUALS.SLEEPER_HEIGHT + TRACK_VISUALS.BALLAST_HEIGHT / 2;
+                leftPos.y += TRACK_VISUALS.BALLAST_HEIGHT / 2;
                 leftPath.push(leftPos);
 
                 // Right edge follows whichever route is further right
@@ -1037,7 +1040,8 @@ export class TrackRenderer {
                     // Use straight route's right side
                     rightPos = straightPt.position.add(straightPt.right.scale(halfWidth));
                 }
-                rightPos.y -= TRACK_VISUALS.SLEEPER_HEIGHT + TRACK_VISUALS.BALLAST_HEIGHT / 2;
+                // Position ballast ON TOP of board surface
+                rightPos.y += TRACK_VISUALS.BALLAST_HEIGHT / 2;
                 rightPath.push(rightPos);
             }
 
@@ -1326,8 +1330,9 @@ export class TrackRenderer {
 
             if (!center) return null;
 
+            // Position at rail height (on top of ballast + sleepers)
             center.position = intersection.clone();
-            center.position.y += TRACK_VISUALS.RAIL_HEIGHT / 2;
+            center.position.y += TRACK_VISUALS.BALLAST_HEIGHT + TRACK_VISUALS.SLEEPER_HEIGHT + TRACK_VISUALS.RAIL_HEIGHT / 2;
 
             if (this.materials.frog) {
                 center.material = this.materials.frog;
@@ -1398,15 +1403,16 @@ export class TrackRenderer {
             // Create a square-ish ballast area covering both tracks
             const halfWidth = TRACK_VISUALS.BALLAST_WIDTH * 0.75;
 
+            // Position ballast ON TOP of board surface
             const leftPath = trackAPoints.map(p => {
                 const pos = p.position.add(p.right.scale(-halfWidth));
-                pos.y -= TRACK_VISUALS.SLEEPER_HEIGHT + TRACK_VISUALS.BALLAST_HEIGHT / 2;
+                pos.y += TRACK_VISUALS.BALLAST_HEIGHT / 2;
                 return pos;
             });
 
             const rightPath = trackAPoints.map(p => {
                 const pos = p.position.add(p.right.scale(halfWidth));
-                pos.y -= TRACK_VISUALS.SLEEPER_HEIGHT + TRACK_VISUALS.BALLAST_HEIGHT / 2;
+                pos.y += TRACK_VISUALS.BALLAST_HEIGHT / 2;
                 return pos;
             });
 
@@ -1766,13 +1772,16 @@ export class TrackRenderer {
         const w = TRACK_VISUALS.RAIL_WIDTH / 2;
         const h = TRACK_VISUALS.RAIL_HEIGHT;
 
-        // Simple rectangular profile for rail cross-section
+        // Rail base height: rails sit on top of ballast + sleepers
+        const baseY = TRACK_VISUALS.BALLAST_HEIGHT + TRACK_VISUALS.SLEEPER_HEIGHT;
+
         // Profile is in local YZ plane, extruded along X (path direction)
+        // Starts at baseY (on top of sleepers) and extends up by rail height
         return [
-            new Vector3(0, 0, -w),
-            new Vector3(0, h, -w),
-            new Vector3(0, h, w),
-            new Vector3(0, 0, w)
+            new Vector3(0, baseY, -w),
+            new Vector3(0, baseY + h, -w),
+            new Vector3(0, baseY + h, w),
+            new Vector3(0, baseY, w)
         ];
     }
 
@@ -1874,8 +1883,10 @@ export class TrackRenderer {
             }
 
             // Position slightly below rail level
+            // Position sleeper ON TOP of ballast layer
+            // Sleeper center Y = board surface + ballast height + half sleeper height
             sleeper.position = position.clone();
-            sleeper.position.y -= TRACK_VISUALS.RAIL_HEIGHT / 2;
+            sleeper.position.y += TRACK_VISUALS.BALLAST_HEIGHT + TRACK_VISUALS.SLEEPER_HEIGHT / 2;
 
             // Rotate to align PERPENDICULAR to track direction
             // The sleeper's "depth" (local Z) should align with track forward
@@ -1960,15 +1971,17 @@ export class TrackRenderer {
             const halfWidth = TRACK_VISUALS.BALLAST_WIDTH / 2;
 
             // Create ballast as a ribbon following the track
+            // Create ballast as a ribbon following the track
+            // Position ballast ON TOP of board surface
             const leftPath = points.map(p => {
                 const pos = p.position.add(p.right.scale(-halfWidth));
-                pos.y -= TRACK_VISUALS.SLEEPER_HEIGHT + TRACK_VISUALS.BALLAST_HEIGHT / 2;
+                pos.y += TRACK_VISUALS.BALLAST_HEIGHT / 2;
                 return pos;
             });
 
             const rightPath = points.map(p => {
                 const pos = p.position.add(p.right.scale(halfWidth));
-                pos.y -= TRACK_VISUALS.SLEEPER_HEIGHT + TRACK_VISUALS.BALLAST_HEIGHT / 2;
+                pos.y += TRACK_VISUALS.BALLAST_HEIGHT / 2;
                 return pos;
             });
 
