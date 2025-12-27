@@ -196,6 +196,12 @@ export class ModelImportButton {
     /** Map of model IDs to their scalable adapters */
     private scalableAdapters: Map<string, ScalableModelAdapter> = new Map();
 
+    /** Map of model IDs to their height offsets (in meters) */
+    private modelHeightOffsets: Map<string, number> = new Map();
+
+    /** Whether H key is held for height adjustment */
+    private heightKeyHeld: boolean = false;
+
     // ========================================================================
     // SELECTION & DRAG PROPERTIES
     // ========================================================================
@@ -289,6 +295,12 @@ export class ModelImportButton {
             // ----------------------------------------------------------------
             this.sidebarScaleControls = new SidebarScaleControls();
             this.sidebarScaleControls.setScaleManager(this.scaleManager);
+
+            // Connect height change callback
+            this.sidebarScaleControls.setHeightChangeCallback((objectId, heightOffset) => {
+                this.handleHeightChange(objectId, heightOffset);
+            });
+
             console.log(`${LOG_PREFIX} ✓ SidebarScaleControls created`);
 
             // ----------------------------------------------------------------
@@ -333,13 +345,16 @@ export class ModelImportButton {
     private logControls(): void {
         console.log('');
         console.log('╔════════════════════════════════════════════════════════════╗');
-        console.log('║              MODEL & SCALE CONTROLS                        ║');
+        console.log('║              MODEL & TRANSFORM CONTROLS                    ║');
         console.log('╠════════════════════════════════════════════════════════════╣');
         console.log('║  Click model        → Select it                            ║');
-        console.log('║  Drag model         → Move it                              ║');
+        console.log('║  Drag model         → Move it (XZ plane)                   ║');
         console.log('║  Drag gizmo corner  → Scale uniformly                      ║');
         console.log('║  S + Scroll         → Scale selected object                ║');
         console.log('║  Shift+S + Scroll   → Fine scale adjustment                ║');
+        console.log('║  H + Scroll         → Adjust height (lift/lower)           ║');
+        console.log('║  PageUp / PageDown  → Height ±5mm                          ║');
+        console.log('║  Shift+PgUp/PgDn    → Height ±1mm (fine)                   ║');
         console.log('║  R                  → Reset to original scale              ║');
         console.log('║  L                  → Lock/unlock scaling                  ║');
         console.log('║  [ / ]              → Rotate ±5°                           ║');
@@ -347,7 +362,7 @@ export class ModelImportButton {
         console.log('║  Delete             → Remove selected model                ║');
         console.log('║  Escape             → Deselect                             ║');
         console.log('╠════════════════════════════════════════════════════════════╣');
-        console.log('║  Scale controls in Models sidebar → Settings section       ║');
+        console.log('║  Transform controls in Models sidebar → Settings section   ║');
         console.log('╚════════════════════════════════════════════════════════════╝');
         console.log('');
         console.log(`${LOG_PREFIX} === TRAIN ORIENTATION HELP ===`);
@@ -449,6 +464,79 @@ export class ModelImportButton {
         } catch (error) {
             console.error(`${LOG_PREFIX} Error unregistering from scaling:`, error);
         }
+    }
+
+    // ========================================================================
+    // HEIGHT ADJUSTMENT
+    // ========================================================================
+
+    /**
+     * Handle height change from sidebar controls
+     * Moves the model up or down along the Y axis
+     * 
+     * @param objectId - ID of the model to adjust
+     * @param heightOffset - Height offset in meters (positive = up)
+     */
+    private handleHeightChange(objectId: string, heightOffset: number): void {
+        if (!this.modelSystem) return;
+
+        try {
+            // Get the placed model
+            const placedModel = this.modelSystem.getPlacedModel(objectId);
+            if (!placedModel || !placedModel.rootNode) {
+                console.warn(`${LOG_PREFIX} Model not found for height adjustment: ${objectId}`);
+                return;
+            }
+
+            // Get the model's base Y position (where it was originally placed)
+            const baseY = this.getModelBaseY(placedModel);
+
+            // Calculate new Y position
+            const newY = baseY + heightOffset;
+
+            // Update the model's Y position
+            placedModel.rootNode.position.y = newY;
+
+            // Store the height offset
+            this.modelHeightOffsets.set(objectId, heightOffset);
+
+            // Log the change
+            const heightMM = Math.round(heightOffset * 1000);
+            console.log(`${LOG_PREFIX} Height adjusted: ${objectId} → ${heightMM}mm offset (Y=${newY.toFixed(4)})`);
+
+        } catch (error) {
+            console.error(`${LOG_PREFIX} Error adjusting height:`, error);
+        }
+    }
+
+    /**
+     * Get the base Y position for a model (where it should sit at height offset 0)
+     * 
+     * @param placedModel - The placed model
+     * @returns Base Y position in meters
+     */
+    private getModelBaseY(placedModel: PlacedModel): number {
+        // Check if this is a rolling stock model (placed on track)
+        const libraryEntry = this.library.getModel(placedModel.libraryId);
+        const category = libraryEntry?.category || 'scenery';
+
+        if (TRACK_PLACEMENT_CATEGORIES.includes(category)) {
+            // Rolling stock sits on rail surface
+            return SURFACE_HEIGHTS.RAIL_TOP_Y;
+        } else {
+            // Other models sit on baseboard surface
+            return SURFACE_HEIGHTS.BASEBOARD_TOP;
+        }
+    }
+
+    /**
+     * Get the current height offset for a model
+     * 
+     * @param modelId - ID of the model
+     * @returns Height offset in meters
+     */
+    private getModelHeightOffset(modelId: string): number {
+        return this.modelHeightOffsets.get(modelId) || 0;
     }
 
     // ========================================================================
@@ -719,6 +807,9 @@ export class ModelImportButton {
      * App.ts handles the rotation instead.
      */
     private setupKeyboardShortcuts(): void {
+        // ----------------------------------------------------------------
+        // Keydown handler
+        // ----------------------------------------------------------------
         window.addEventListener('keydown', (event: KeyboardEvent) => {
             // Skip if typing in an input field
             if (event.target instanceof HTMLInputElement ||
@@ -739,6 +830,34 @@ export class ModelImportButton {
             const selectedModel = this.modelSystem.getSelectedModel();
 
             switch (event.key) {
+                case 'h':
+                case 'H':
+                    // Track H key for height adjustment via scroll
+                    if (!event.repeat) {
+                        this.heightKeyHeld = true;
+                    }
+                    break;
+
+                case 'PageUp':
+                    // Raise model height
+                    if (selectedModel && !trackSelected) {
+                        event.preventDefault();
+                        const step = event.shiftKey ? 1 : 5; // 1mm fine, 5mm normal
+                        this.sidebarScaleControls?.adjustHeight(step);
+                        console.log(`${LOG_PREFIX} Height +${step}mm`);
+                    }
+                    break;
+
+                case 'PageDown':
+                    // Lower model height
+                    if (selectedModel && !trackSelected) {
+                        event.preventDefault();
+                        const step = event.shiftKey ? -1 : -5; // 1mm fine, 5mm normal
+                        this.sidebarScaleControls?.adjustHeight(step);
+                        console.log(`${LOG_PREFIX} Height ${step}mm`);
+                    }
+                    break;
+
                 case '[':
                     // Rotate left - only if model selected AND no track selected
                     if (selectedModel && !trackSelected) {
@@ -769,6 +888,9 @@ export class ModelImportButton {
 
                         // Unregister from scaling system first
                         this.unregisterModelFromScaling(selectedModel.id);
+
+                        // Remove height offset
+                        this.modelHeightOffsets.delete(selectedModel.id);
 
                         // Unregister from outliner
                         this.unregisterFromOutliner(selectedModel);
@@ -804,9 +926,44 @@ export class ModelImportButton {
             }
         });
 
+        // ----------------------------------------------------------------
+        // Keyup handler - for tracking H key release
+        // ----------------------------------------------------------------
+        window.addEventListener('keyup', (event: KeyboardEvent) => {
+            if (event.key === 'h' || event.key === 'H') {
+                this.heightKeyHeld = false;
+            }
+        });
+
+        // ----------------------------------------------------------------
+        // Wheel handler - for H+scroll height adjustment
+        // ----------------------------------------------------------------
+        window.addEventListener('wheel', (event: WheelEvent) => {
+            // Only handle if H key is held and we have a selected model
+            if (!this.heightKeyHeld) return;
+            if (!this.modelSystem) return;
+
+            const selectedModel = this.modelSystem.getSelectedModel();
+            if (!selectedModel) return;
+
+            // Prevent default scrolling
+            event.preventDefault();
+
+            // Calculate height delta (5mm per scroll notch, 1mm with Shift)
+            const sensitivity = event.shiftKey ? 1 : 5;
+            const delta = event.deltaY < 0 ? sensitivity : -sensitivity;
+
+            // Adjust height via sidebar controls
+            this.sidebarScaleControls?.adjustHeight(delta);
+
+        }, { passive: false });
+
         console.log(`${LOG_PREFIX} Keyboard shortcuts configured:`);
         console.log(`${LOG_PREFIX}   [ / ] = Rotate ±5°`);
         console.log(`${LOG_PREFIX}   Shift + [ / ] = Rotate ±22.5°`);
+        console.log(`${LOG_PREFIX}   H + Scroll = Adjust height`);
+        console.log(`${LOG_PREFIX}   PageUp/PageDown = Height ±5mm`);
+        console.log(`${LOG_PREFIX}   Shift + PgUp/PgDn = Height ±1mm`);
         console.log(`${LOG_PREFIX}   Delete = Remove selected`);
         console.log(`${LOG_PREFIX}   Escape = Deselect`);
         console.log(`${LOG_PREFIX}   S + Scroll = Scale (handled by ScaleManager)`);
@@ -1043,13 +1200,15 @@ export class ModelImportButton {
                 if (this.scaleManager && this.scalableAdapters.has(placedModelId)) {
                     this.scaleManager.selectObject(placedModelId);
 
-                    // === Notify SidebarScaleControls ===
+                    // === Notify SidebarScaleControls with height offset ===
                     const adapter = this.scalableAdapters.get(placedModelId);
+                    const heightOffset = this.getModelHeightOffset(placedModelId);
                     if (this.sidebarScaleControls && adapter) {
                         this.sidebarScaleControls.onObjectSelected(
                             placedModelId,
                             adapter.currentScale,
-                            adapter.scaleLocked
+                            adapter.scaleLocked,
+                            heightOffset
                         );
                     }
                 }
@@ -1264,13 +1423,14 @@ export class ModelImportButton {
                     this.scaleManager.selectObject(placed.id);
                 }
 
-                // Notify SidebarScaleControls
+                // Notify SidebarScaleControls (height offset = 0 for new placement)
                 const adapter = this.scalableAdapters.get(placed.id);
                 if (this.sidebarScaleControls && adapter) {
                     this.sidebarScaleControls.onObjectSelected(
                         placed.id,
                         adapter.currentScale,
-                        adapter.scaleLocked
+                        adapter.scaleLocked,
+                        0 // New placement, no height offset
                     );
                 }
 
@@ -1320,13 +1480,14 @@ export class ModelImportButton {
                         this.scaleManager.selectObject(placed.id);
                     }
 
-                    // Notify SidebarScaleControls
+                    // Notify SidebarScaleControls (height offset = 0 for new placement)
                     const adapter = this.scalableAdapters.get(placed.id);
                     if (this.sidebarScaleControls && adapter) {
                         this.sidebarScaleControls.onObjectSelected(
                             placed.id,
                             adapter.currentScale,
-                            adapter.scaleLocked
+                            adapter.scaleLocked,
+                            0 // New placement, no height offset
                         );
                     }
 
@@ -1379,13 +1540,14 @@ export class ModelImportButton {
                 this.scaleManager.selectObject(placed.id);
             }
 
-            // Notify SidebarScaleControls
+            // Notify SidebarScaleControls (height offset = 0 for new placement)
             const adapter = this.scalableAdapters.get(placed.id);
             if (this.sidebarScaleControls && adapter) {
                 this.sidebarScaleControls.onObjectSelected(
                     placed.id,
                     adapter.currentScale,
-                    adapter.scaleLocked
+                    adapter.scaleLocked,
+                    0 // New placement, no height offset
                 );
             }
 

@@ -187,12 +187,20 @@ export class App {
             this.inputManager.initialize();
 
             // Initialize model import button and system
+            // Initialize model import button and system
             console.log('[App] Initializing model import system...');
             this.modelImportButton = new ModelImportButton(
                 this.scene,
                 this.baseboardSystem
             );
-            this.modelImportButton.initialize();
+            await this.modelImportButton.initialize();
+
+            // Add scale controls to sidebar settings
+            const scaleElement = this.modelImportButton.getScaleControlsElement();
+            if (scaleElement && this.uiManager) {
+                this.uiManager.addScaleControls(scaleElement);
+                console.log('[App] ✓ Scale controls added to sidebar');
+            }
 
             // Connect WorldOutliner to ModelImportButton for bidirectional sync
             // This enables:

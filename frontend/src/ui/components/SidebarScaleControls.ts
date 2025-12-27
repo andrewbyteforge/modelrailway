@@ -1,14 +1,16 @@
 /**
- * SidebarScaleControls.ts - Compact scale controls for sidebar settings
+ * SidebarScaleControls.ts - Compact scale and height controls for sidebar settings
  * 
  * Path: frontend/src/ui/components/SidebarScaleControls.ts
  * 
- * A compact scale control designed to fit in the UIManager sidebar settings.
- * Provides slider, input, and preset buttons in a minimal footprint.
+ * A compact control panel designed to fit in the UIManager sidebar settings.
+ * Provides:
+ * - Scale: slider, input, and preset buttons
+ * - Height: slider for Y-position adjustment (lift/lower models)
  * 
  * @module SidebarScaleControls
  * @author Model Railway Workbench
- * @version 1.0.0
+ * @version 2.0.0 - Added height controls
  */
 
 import type { ScaleManager } from '../../systems/scaling/ScaleManager';
@@ -26,12 +28,31 @@ const MIN_SCALE_PERCENT = 6;
 /** Maximum scale as percentage */
 const MAX_SCALE_PERCENT = 500;
 
+/** Minimum height offset in mm (can go below table surface) */
+const MIN_HEIGHT_MM = -50;
+
+/** Maximum height offset in mm */
+const MAX_HEIGHT_MM = 200;
+
+/** Height step for keyboard shortcuts in mm */
+const HEIGHT_STEP_MM = 5;
+
+/** Fine height step (with Shift) in mm */
+const HEIGHT_FINE_STEP_MM = 1;
+
+// ============================================================================
+// TYPE DEFINITIONS
+// ============================================================================
+
+/** Callback for height changes */
+export type HeightChangeCallback = (objectId: string, heightOffset: number) => void;
+
 // ============================================================================
 // SIDEBAR SCALE CONTROLS CLASS
 // ============================================================================
 
 /**
- * SidebarScaleControls - Compact scale UI for sidebar integration
+ * SidebarScaleControls - Compact scale & height UI for sidebar integration
  */
 export class SidebarScaleControls {
     // ========================================================================
@@ -44,20 +65,18 @@ export class SidebarScaleControls {
     /** Root container element */
     private container: HTMLElement;
 
-    /** Scale slider */
-    private slider: HTMLInputElement | null = null;
-
-    /** Scale input field */
-    private input: HTMLInputElement | null = null;
-
-    /** Preset buttons container */
+    // Scale controls
+    private scaleSlider: HTMLInputElement | null = null;
+    private scaleInput: HTMLInputElement | null = null;
     private presetsRow: HTMLElement | null = null;
-
-    /** Reset button */
     private resetBtn: HTMLButtonElement | null = null;
-
-    /** Lock button */
     private lockBtn: HTMLButtonElement | null = null;
+
+    // Height controls
+    private heightSlider: HTMLInputElement | null = null;
+    private heightInput: HTMLInputElement | null = null;
+    private heightResetBtn: HTMLButtonElement | null = null;
+    private snapToTableBtn: HTMLButtonElement | null = null;
 
     /** No selection message */
     private noSelectionMsg: HTMLElement | null = null;
@@ -71,11 +90,17 @@ export class SidebarScaleControls {
     /** Current scale value */
     private currentScale: number = 1.0;
 
+    /** Current height offset in meters */
+    private currentHeightOffset: number = 0;
+
     /** Whether scale is locked */
     private isLocked: boolean = false;
 
     /** Event listener cleanup */
     private cleanupListener: (() => void) | null = null;
+
+    /** Callback for height changes */
+    private onHeightChange: HeightChangeCallback | null = null;
 
     // ========================================================================
     // CONSTRUCTOR
@@ -92,7 +117,7 @@ export class SidebarScaleControls {
 
     private createUI(): HTMLElement {
         const wrapper = document.createElement('div');
-        wrapper.className = 'sidebar-scale-controls';
+        wrapper.className = 'sidebar-transform-controls';
         wrapper.style.cssText = `
             padding: 12px 0;
             border-top: 1px solid rgba(255,255,255,0.1);
@@ -110,8 +135,8 @@ export class SidebarScaleControls {
             font-size: 13px;
         `;
         header.innerHTML = `
-            <span style="opacity: 0.7;">📐</span>
-            <span>Model Scale</span>
+            <span style="opacity: 0.7;">🔧</span>
+            <span>Model Transform</span>
         `;
         wrapper.appendChild(header);
 
@@ -123,7 +148,7 @@ export class SidebarScaleControls {
             font-style: italic;
             padding: 8px 0;
         `;
-        this.noSelectionMsg.textContent = 'Select a model to adjust scale';
+        this.noSelectionMsg.textContent = 'Select a model to adjust';
         wrapper.appendChild(this.noSelectionMsg);
 
         // Controls wrapper (hidden until selection)
@@ -131,21 +156,66 @@ export class SidebarScaleControls {
         this.controlsWrapper.style.display = 'none';
         wrapper.appendChild(this.controlsWrapper);
 
+        // ================================================================
+        // SCALE SECTION
+        // ================================================================
+        this.createScaleSection();
+
+        // ================================================================
+        // HEIGHT SECTION
+        // ================================================================
+        this.createHeightSection();
+
+        // ================================================================
+        // KEYBOARD HINTS
+        // ================================================================
+        const hints = document.createElement('div');
+        hints.style.cssText = `
+            margin-top: 12px;
+            padding-top: 8px;
+            border-top: 1px solid rgba(255,255,255,0.05);
+            font-size: 10px;
+            color: #666;
+        `;
+        hints.innerHTML = `
+            <div style="margin-bottom: 4px;"><kbd style="background:#333;padding:2px 4px;border-radius:2px;font-size:9px;">S</kbd> + Scroll = Scale</div>
+            <div style="margin-bottom: 4px;"><kbd style="background:#333;padding:2px 4px;border-radius:2px;font-size:9px;">H</kbd> + Scroll = Height</div>
+            <div><kbd style="background:#333;padding:2px 4px;border-radius:2px;font-size:9px;">PgUp</kbd>/<kbd style="background:#333;padding:2px 4px;border-radius:2px;font-size:9px;">PgDn</kbd> = Height ±5mm</div>
+        `;
+        this.controlsWrapper.appendChild(hints);
+
+        return wrapper;
+    }
+
+    private createScaleSection(): void {
+        // Scale label
+        const scaleLabel = document.createElement('div');
+        scaleLabel.style.cssText = `
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            margin-bottom: 6px;
+            color: #aaa;
+            font-size: 11px;
+        `;
+        scaleLabel.innerHTML = `<span>📐</span><span>Scale</span>`;
+        this.controlsWrapper!.appendChild(scaleLabel);
+
         // Slider row
         const sliderRow = document.createElement('div');
         sliderRow.style.cssText = `
             display: flex;
             align-items: center;
             gap: 8px;
-            margin-bottom: 10px;
+            margin-bottom: 8px;
         `;
 
-        this.slider = document.createElement('input');
-        this.slider.type = 'range';
-        this.slider.min = String(MIN_SCALE_PERCENT);
-        this.slider.max = String(MAX_SCALE_PERCENT);
-        this.slider.value = '100';
-        this.slider.style.cssText = `
+        this.scaleSlider = document.createElement('input');
+        this.scaleSlider.type = 'range';
+        this.scaleSlider.min = String(MIN_SCALE_PERCENT);
+        this.scaleSlider.max = String(MAX_SCALE_PERCENT);
+        this.scaleSlider.value = '100';
+        this.scaleSlider.style.cssText = `
             flex: 1;
             height: 4px;
             border-radius: 2px;
@@ -156,10 +226,10 @@ export class SidebarScaleControls {
             cursor: pointer;
         `;
 
-        this.input = document.createElement('input');
-        this.input.type = 'text';
-        this.input.value = '100%';
-        this.input.style.cssText = `
+        this.scaleInput = document.createElement('input');
+        this.scaleInput.type = 'text';
+        this.scaleInput.value = '100%';
+        this.scaleInput.style.cssText = `
             width: 52px;
             padding: 4px 6px;
             border: 1px solid #555;
@@ -170,9 +240,9 @@ export class SidebarScaleControls {
             text-align: center;
         `;
 
-        sliderRow.appendChild(this.slider);
-        sliderRow.appendChild(this.input);
-        this.controlsWrapper.appendChild(sliderRow);
+        sliderRow.appendChild(this.scaleSlider);
+        sliderRow.appendChild(this.scaleInput);
+        this.controlsWrapper!.appendChild(sliderRow);
 
         // Preset buttons row
         this.presetsRow = document.createElement('div');
@@ -180,7 +250,7 @@ export class SidebarScaleControls {
             display: flex;
             gap: 4px;
             flex-wrap: wrap;
-            margin-bottom: 10px;
+            margin-bottom: 8px;
         `;
 
         const presets = [
@@ -218,13 +288,14 @@ export class SidebarScaleControls {
             this.presetsRow!.appendChild(btn);
         });
 
-        this.controlsWrapper.appendChild(this.presetsRow);
+        this.controlsWrapper!.appendChild(this.presetsRow);
 
         // Action buttons row
         const actionsRow = document.createElement('div');
         actionsRow.style.cssText = `
             display: flex;
             gap: 6px;
+            margin-bottom: 12px;
         `;
 
         this.resetBtn = document.createElement('button');
@@ -265,37 +336,174 @@ export class SidebarScaleControls {
 
         actionsRow.appendChild(this.resetBtn);
         actionsRow.appendChild(this.lockBtn);
-        this.controlsWrapper.appendChild(actionsRow);
+        this.controlsWrapper!.appendChild(actionsRow);
 
-        // Attach input handlers
-        this.attachInputHandlers();
-
-        return wrapper;
+        // Attach scale input handlers
+        this.attachScaleInputHandlers();
     }
 
-    private attachInputHandlers(): void {
+    private createHeightSection(): void {
+        // Height label
+        const heightLabel = document.createElement('div');
+        heightLabel.style.cssText = `
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            margin-bottom: 6px;
+            color: #aaa;
+            font-size: 11px;
+        `;
+        heightLabel.innerHTML = `<span>↕️</span><span>Height Offset</span>`;
+        this.controlsWrapper!.appendChild(heightLabel);
+
+        // Height slider row
+        const heightRow = document.createElement('div');
+        heightRow.style.cssText = `
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-bottom: 8px;
+        `;
+
+        this.heightSlider = document.createElement('input');
+        this.heightSlider.type = 'range';
+        this.heightSlider.min = String(MIN_HEIGHT_MM);
+        this.heightSlider.max = String(MAX_HEIGHT_MM);
+        this.heightSlider.value = '0';
+        this.heightSlider.style.cssText = `
+            flex: 1;
+            height: 4px;
+            border-radius: 2px;
+            -webkit-appearance: none;
+            appearance: none;
+            background: linear-gradient(to right, #444 0%, #666 100%);
+            outline: none;
+            cursor: pointer;
+        `;
+
+        this.heightInput = document.createElement('input');
+        this.heightInput.type = 'text';
+        this.heightInput.value = '0mm';
+        this.heightInput.style.cssText = `
+            width: 52px;
+            padding: 4px 6px;
+            border: 1px solid #555;
+            border-radius: 4px;
+            background: #333;
+            color: #fff;
+            font-size: 11px;
+            text-align: center;
+        `;
+
+        heightRow.appendChild(this.heightSlider);
+        heightRow.appendChild(this.heightInput);
+        this.controlsWrapper!.appendChild(heightRow);
+
+        // Height action buttons
+        const heightActionsRow = document.createElement('div');
+        heightActionsRow.style.cssText = `
+            display: flex;
+            gap: 6px;
+        `;
+
+        this.snapToTableBtn = document.createElement('button');
+        this.snapToTableBtn.innerHTML = '⬇ Snap to Table';
+        this.snapToTableBtn.title = 'Place model directly on table surface';
+        this.snapToTableBtn.style.cssText = `
+            flex: 1;
+            padding: 5px 8px;
+            font-size: 11px;
+            border: none;
+            border-radius: 4px;
+            background: #2d6a4f;
+            color: #fff;
+            cursor: pointer;
+            transition: all 0.15s ease;
+        `;
+        this.snapToTableBtn.addEventListener('click', () => this.snapToTable());
+        this.snapToTableBtn.addEventListener('mouseenter', () => {
+            this.snapToTableBtn!.style.background = '#40916c';
+        });
+        this.snapToTableBtn.addEventListener('mouseleave', () => {
+            this.snapToTableBtn!.style.background = '#2d6a4f';
+        });
+
+        this.heightResetBtn = document.createElement('button');
+        this.heightResetBtn.innerHTML = '↺';
+        this.heightResetBtn.title = 'Reset height to default';
+        this.heightResetBtn.style.cssText = `
+            padding: 5px 10px;
+            font-size: 12px;
+            border: none;
+            border-radius: 4px;
+            background: #555;
+            color: #fff;
+            cursor: pointer;
+            transition: all 0.15s ease;
+        `;
+        this.heightResetBtn.addEventListener('click', () => this.resetHeight());
+        this.heightResetBtn.addEventListener('mouseenter', () => {
+            this.heightResetBtn!.style.background = '#666';
+        });
+        this.heightResetBtn.addEventListener('mouseleave', () => {
+            this.heightResetBtn!.style.background = '#555';
+        });
+
+        heightActionsRow.appendChild(this.snapToTableBtn);
+        heightActionsRow.appendChild(this.heightResetBtn);
+        this.controlsWrapper!.appendChild(heightActionsRow);
+
+        // Attach height input handlers
+        this.attachHeightInputHandlers();
+    }
+
+    private attachScaleInputHandlers(): void {
         // Slider change
-        this.slider?.addEventListener('input', () => {
+        this.scaleSlider?.addEventListener('input', () => {
             if (this.isLocked) return;
-            const percent = parseInt(this.slider!.value, 10);
+            const percent = parseInt(this.scaleSlider!.value, 10);
             this.setScale(percent / 100);
         });
 
         // Input field change
-        this.input?.addEventListener('change', () => {
+        this.scaleInput?.addEventListener('change', () => {
             if (this.isLocked) return;
-            const text = this.input!.value.replace('%', '').trim();
+            const text = this.scaleInput!.value.replace('%', '').trim();
             const percent = parseFloat(text);
             if (!isNaN(percent)) {
                 const clamped = Math.max(MIN_SCALE_PERCENT, Math.min(MAX_SCALE_PERCENT, percent));
                 this.setScale(clamped / 100);
             } else {
-                this.updateDisplay();
+                this.updateScaleDisplay();
             }
         });
 
-        this.input?.addEventListener('focus', () => {
-            this.input?.select();
+        this.scaleInput?.addEventListener('focus', () => {
+            this.scaleInput?.select();
+        });
+    }
+
+    private attachHeightInputHandlers(): void {
+        // Slider change
+        this.heightSlider?.addEventListener('input', () => {
+            const mm = parseInt(this.heightSlider!.value, 10);
+            this.setHeightOffset(mm / 1000); // Convert mm to meters
+        });
+
+        // Input field change
+        this.heightInput?.addEventListener('change', () => {
+            const text = this.heightInput!.value.replace('mm', '').trim();
+            const mm = parseFloat(text);
+            if (!isNaN(mm)) {
+                const clamped = Math.max(MIN_HEIGHT_MM, Math.min(MAX_HEIGHT_MM, mm));
+                this.setHeightOffset(clamped / 1000); // Convert mm to meters
+            } else {
+                this.updateHeightDisplay();
+            }
+        });
+
+        this.heightInput?.addEventListener('focus', () => {
+            this.heightInput?.select();
         });
     }
 
@@ -321,14 +529,14 @@ export class SidebarScaleControls {
                 case 'scale-preview':
                     if (event.objectId === this.selectedObjectId && event.scale !== undefined) {
                         this.currentScale = event.scale;
-                        this.updateDisplay();
+                        this.updateScaleDisplay();
                     }
                     break;
 
                 case 'scale-reset':
                     if (event.objectId === this.selectedObjectId) {
                         this.currentScale = 1.0;
-                        this.updateDisplay();
+                        this.updateScaleDisplay();
                     }
                     break;
 
@@ -349,6 +557,13 @@ export class SidebarScaleControls {
         console.log(`${LOG_PREFIX} Connected to ScaleManager`);
     }
 
+    /**
+     * Set callback for height changes
+     */
+    public setHeightChangeCallback(callback: HeightChangeCallback): void {
+        this.onHeightChange = callback;
+    }
+
     // ========================================================================
     // SELECTION HANDLING
     // ========================================================================
@@ -356,16 +571,23 @@ export class SidebarScaleControls {
     /**
      * Called when a model is selected
      */
-    public onObjectSelected(objectId: string, currentScale: number = 1.0, isLocked: boolean = false): void {
+    public onObjectSelected(
+        objectId: string,
+        currentScale: number = 1.0,
+        isLocked: boolean = false,
+        heightOffset: number = 0
+    ): void {
         this.selectedObjectId = objectId;
         this.currentScale = currentScale;
         this.isLocked = isLocked;
+        this.currentHeightOffset = heightOffset;
 
         // Show controls, hide message
         if (this.noSelectionMsg) this.noSelectionMsg.style.display = 'none';
         if (this.controlsWrapper) this.controlsWrapper.style.display = 'block';
 
-        this.updateDisplay();
+        this.updateScaleDisplay();
+        this.updateHeightDisplay();
         this.updateLockButton();
 
         console.log(`${LOG_PREFIX} Object selected: ${objectId}`);
@@ -377,6 +599,7 @@ export class SidebarScaleControls {
     public onObjectDeselected(): void {
         this.selectedObjectId = null;
         this.currentScale = 1.0;
+        this.currentHeightOffset = 0;
         this.isLocked = false;
 
         // Hide controls, show message
@@ -395,7 +618,7 @@ export class SidebarScaleControls {
 
         this.currentScale = scaleFactor;
         this.scaleManager.setScale(this.selectedObjectId, scaleFactor);
-        this.updateDisplay();
+        this.updateScaleDisplay();
     }
 
     private resetScale(): void {
@@ -409,20 +632,77 @@ export class SidebarScaleControls {
     }
 
     // ========================================================================
+    // HEIGHT OPERATIONS
+    // ========================================================================
+
+    private setHeightOffset(heightMeters: number): void {
+        if (!this.selectedObjectId) return;
+
+        this.currentHeightOffset = heightMeters;
+        this.updateHeightDisplay();
+
+        // Notify callback
+        if (this.onHeightChange) {
+            this.onHeightChange(this.selectedObjectId, heightMeters);
+        }
+    }
+
+    private resetHeight(): void {
+        this.setHeightOffset(0);
+    }
+
+    private snapToTable(): void {
+        // Setting to 0 means sitting directly on the placement surface
+        this.setHeightOffset(0);
+    }
+
+    /**
+     * Adjust height by delta (called from keyboard handler)
+     * @param deltaMM - Height change in millimeters (positive = up)
+     */
+    public adjustHeight(deltaMM: number): void {
+        if (!this.selectedObjectId) return;
+
+        const currentMM = this.currentHeightOffset * 1000;
+        const newMM = Math.max(MIN_HEIGHT_MM, Math.min(MAX_HEIGHT_MM, currentMM + deltaMM));
+        this.setHeightOffset(newMM / 1000);
+    }
+
+    /**
+     * Update height from external source
+     */
+    public updateHeight(heightMeters: number): void {
+        this.currentHeightOffset = heightMeters;
+        this.updateHeightDisplay();
+    }
+
+    // ========================================================================
     // DISPLAY UPDATES
     // ========================================================================
 
-    private updateDisplay(): void {
+    private updateScaleDisplay(): void {
         const percent = Math.round(this.currentScale * 100);
 
-        if (this.slider) {
-            this.slider.value = String(Math.max(MIN_SCALE_PERCENT, Math.min(MAX_SCALE_PERCENT, percent)));
-            this.slider.disabled = this.isLocked;
+        if (this.scaleSlider) {
+            this.scaleSlider.value = String(Math.max(MIN_SCALE_PERCENT, Math.min(MAX_SCALE_PERCENT, percent)));
+            this.scaleSlider.disabled = this.isLocked;
         }
 
-        if (this.input) {
-            this.input.value = `${percent}%`;
-            this.input.disabled = this.isLocked;
+        if (this.scaleInput) {
+            this.scaleInput.value = `${percent}%`;
+            this.scaleInput.disabled = this.isLocked;
+        }
+    }
+
+    private updateHeightDisplay(): void {
+        const mm = Math.round(this.currentHeightOffset * 1000);
+
+        if (this.heightSlider) {
+            this.heightSlider.value = String(Math.max(MIN_HEIGHT_MM, Math.min(MAX_HEIGHT_MM, mm)));
+        }
+
+        if (this.heightInput) {
+            this.heightInput.value = `${mm}mm`;
         }
     }
 
@@ -449,6 +729,13 @@ export class SidebarScaleControls {
      */
     public getElement(): HTMLElement {
         return this.container;
+    }
+
+    /**
+     * Get the currently selected object ID
+     */
+    public getSelectedObjectId(): string | null {
+        return this.selectedObjectId;
     }
 
     // ========================================================================

@@ -969,6 +969,8 @@ export class UIManager {
             { keys: ['[', ']'], desc: 'Rotate ±5°' },
             { keys: ['Shift', '[', ']'], desc: 'Rotate ±22.5°' },
             { keys: ['S', 'Scroll'], desc: 'Scale model' },
+            { keys: ['H', 'Scroll'], desc: 'Adjust height' },
+            { keys: ['PgUp', 'PgDn'], desc: 'Height ±5mm' },
             { keys: ['R'], desc: 'Reset scale' },
             { keys: ['L'], desc: 'Lock scale' },
             { keys: ['T'], desc: 'Toggle switch' },
