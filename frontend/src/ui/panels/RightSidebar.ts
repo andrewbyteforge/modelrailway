@@ -1,23 +1,33 @@
 /**
- * RightSidebar.ts - Right-side panel container with World Outliner
+ * RightSidebar.ts - Right-side panel container with World Outliner and Properties
  * 
  * Path: frontend/src/ui/panels/RightSidebar.ts
  * 
  * Container panel positioned on the right side of the screen,
- * hosting the World Outliner at the top and additional panels below.
+ * hosting the World Outliner at the top and Properties panel below.
  * Features a slide-out toggle tab for opening/closing.
+ * 
+ * Structure:
+ * - World Outliner (top): Scene hierarchy tree view
+ * - Properties Panel (bottom): Settings including FPS toggle
  * 
  * @module RightSidebar
  * @author Model Railway Workbench
- * @version 2.0.0
+ * @version 2.1.0
  */
 
+import { Scene } from '@babylonjs/core/scene';
 import { WorldOutliner } from '../../systems/outliner/WorldOutliner';
 import { OutlinerPanel } from './OutlinerPanel';
+import { PropertiesPanel } from './PropertiesPanel';
+import { FPSDisplay } from '../../systems/performance/FPSDisplay';
 
 // ============================================================================
 // CONSTANTS & STYLES
 // ============================================================================
+
+/** Logging prefix for consistent console output */
+const LOG_PREFIX = '[RightSidebar]';
 
 /** Color scheme for the sidebar - matching UIManager theme */
 const SIDEBAR_COLORS = {
@@ -52,10 +62,11 @@ const DEFAULT_CONFIG = {
     width: 280,
     minWidth: 200,
     maxWidth: 500,
-    defaultCollapsed: true, // Start closed as requested
+    defaultCollapsed: true,
     animationDuration: 250,
     toggleButtonSize: 48,
     toggleButtonHeight: 80,
+    outlinerHeightRatio: 0.6,  // 60% for outliner, 40% for properties
 } as const;
 
 // ============================================================================
@@ -67,19 +78,20 @@ const DEFAULT_CONFIG = {
  * 
  * Contains:
  * - World Outliner (top section)
- * - Future: Properties panel, Inspector, etc.
+ * - Properties Panel (bottom section) with FPS toggle
  * 
  * Features:
  * - External toggle tab (positioned above models sidebar tab)
  * - Collapsible with smooth animation
  * - Resizable width
  * - Persistent state
+ * - FPS monitoring and display
  * 
  * @example
  * ```typescript
- * const sidebar = new RightSidebar(outliner);
+ * const sidebar = new RightSidebar(outliner, scene);
  * sidebar.initialize();
- * document.body.appendChild(sidebar.getElement());
+ * document.body.appendChild(sidebar.getElement()!);
  * ```
  */
 export class RightSidebar {
@@ -90,8 +102,17 @@ export class RightSidebar {
     /** WorldOutliner system reference */
     private outliner: WorldOutliner;
 
+    /** Babylon.js scene reference for FPS monitoring (may be null if not provided) */
+    private scene: Scene | null;
+
     /** OutlinerPanel instance */
     private outlinerPanel: OutlinerPanel | null = null;
+
+    /** PropertiesPanel instance */
+    private propertiesPanel: PropertiesPanel | null = null;
+
+    /** FPS display system instance */
+    private fpsDisplay: FPSDisplay | null = null;
 
     /** Main container element */
     private container: HTMLElement | null = null;
@@ -127,10 +148,28 @@ export class RightSidebar {
     /**
      * Create a new RightSidebar
      * @param outliner - WorldOutliner instance
+     * @param scene - Babylon.js scene for FPS monitoring (optional - will try to get from outliner)
      */
-    constructor(outliner: WorldOutliner) {
+    constructor(outliner: WorldOutliner, scene?: Scene) {
         this.outliner = outliner;
-        console.log('[RightSidebar] Created');
+
+        // Try to get scene from parameter, or extract from outliner if available
+        if (scene) {
+            this.scene = scene;
+        } else {
+            // Try to get scene from the outliner's internal reference
+            const outlinerScene = (outliner as any).scene || (outliner as any)._scene;
+            if (outlinerScene) {
+                this.scene = outlinerScene;
+                console.log(`${LOG_PREFIX} Scene obtained from WorldOutliner`);
+            } else {
+                console.warn(`${LOG_PREFIX} No scene provided - FPS display will be disabled`);
+                console.warn(`${LOG_PREFIX} Pass scene as second parameter: new RightSidebar(outliner, scene)`);
+                this.scene = null;
+            }
+        }
+
+        console.log(`${LOG_PREFIX} Created`);
     }
 
     // ========================================================================
@@ -142,7 +181,10 @@ export class RightSidebar {
      */
     initialize(): void {
         try {
-            console.log('[RightSidebar] Initializing...');
+            console.log(`${LOG_PREFIX} Initializing...`);
+
+            // Initialize FPS display system first
+            this.initializeFPSDisplay();
 
             // Inject styles for the toggle button
             this.injectStyles();
@@ -156,19 +198,59 @@ export class RightSidebar {
             // Create outliner panel
             this.createOutlinerPanel();
 
-            // Create placeholder for future panels
-            this.createPlaceholderSection();
+            // Create properties panel with FPS toggle
+            this.createPropertiesPanel();
 
             // Setup resize functionality
             this.setupResize();
 
+            // Setup keyboard shortcut
+            this.setupKeyboardShortcut();
+
             // Load saved state
             this.loadState();
 
-            console.log('[RightSidebar] ✓ Initialized');
+            console.log(`${LOG_PREFIX} ✓ Initialized`);
         } catch (error) {
-            console.error('[RightSidebar] Initialization error:', error);
+            console.error(`${LOG_PREFIX} Initialization error:`, error);
             throw error;
+        }
+    }
+
+    // ========================================================================
+    // FPS DISPLAY INITIALIZATION
+    // ========================================================================
+
+    /**
+     * Initialize the FPS display system
+     */
+    private initializeFPSDisplay(): void {
+        // Check if scene is available
+        if (!this.scene) {
+            console.warn(`${LOG_PREFIX} Cannot initialize FPS display - no scene available`);
+            console.warn(`${LOG_PREFIX} To enable FPS display, pass scene to RightSidebar constructor:`);
+            console.warn(`${LOG_PREFIX}   new RightSidebar(outliner, scene)`);
+            this.fpsDisplay = null;
+            return;
+        }
+
+        try {
+            console.log(`${LOG_PREFIX} Initializing FPS display...`);
+            console.log(`${LOG_PREFIX} Scene available:`, !!this.scene);
+            console.log(`${LOG_PREFIX} Scene engine:`, !!this.scene.getEngine?.());
+
+            this.fpsDisplay = new FPSDisplay(this.scene, {
+                updateIntervalMs: 250,
+                smoothingSamples: 10,
+                showOverlay: false,
+            });
+            this.fpsDisplay.initialize();
+
+            console.log(`${LOG_PREFIX} ✓ FPS display initialized`);
+        } catch (error) {
+            console.error(`${LOG_PREFIX} Failed to initialize FPS display:`, error);
+            // Continue without FPS - not critical
+            this.fpsDisplay = null;
         }
     }
 
@@ -340,7 +422,7 @@ export class RightSidebar {
     private createToggleButton(): void {
         this.toggleButton = document.createElement('button');
         this.toggleButton.className = 'outliner-toggle-btn';
-        this.toggleButton.title = 'Toggle Outliner';
+        this.toggleButton.title = 'Toggle Outliner (Alt+O)';
 
         // Apply initial collapsed state
         if (this.isCollapsed) {
@@ -374,6 +456,7 @@ export class RightSidebar {
             background: linear-gradient(135deg, ${SIDEBAR_COLORS.PRIMARY} 0%, ${SIDEBAR_COLORS.PRIMARY_DARK} 100%);
             border-bottom: 1px solid ${SIDEBAR_COLORS.BORDER_LIGHT};
             min-height: 44px;
+            flex-shrink: 0;
         `;
 
         // Title with icon
@@ -401,14 +484,16 @@ export class RightSidebar {
     private createOutlinerPanel(): void {
         if (!this.contentWrapper) return;
 
-        // Outliner container (takes most of the space)
+        // Outliner container (takes configured ratio of space)
         const outlinerContainer = document.createElement('div');
+        outlinerContainer.className = 'outliner-container';
         outlinerContainer.style.cssText = `
-            flex: 2;
-            min-height: 200px;
+            flex: ${DEFAULT_CONFIG.outlinerHeightRatio};
+            min-height: 150px;
             display: flex;
             flex-direction: column;
             border-bottom: 1px solid ${SIDEBAR_COLORS.BORDER};
+            overflow: hidden;
         `;
 
         // Create outliner panel
@@ -418,6 +503,7 @@ export class RightSidebar {
         // Add outliner element
         const outlinerElement = this.outlinerPanel.getElement();
         if (outlinerElement) {
+            outlinerElement.style.height = '100%';
             outlinerContainer.appendChild(outlinerElement);
         }
 
@@ -432,44 +518,39 @@ export class RightSidebar {
     }
 
     /**
-     * Create placeholder section for future panels
+     * Create the Properties panel with FPS toggle
      */
-    private createPlaceholderSection(): void {
+    private createPropertiesPanel(): void {
         if (!this.contentWrapper) return;
 
-        // Properties section placeholder
-        const propertiesSection = document.createElement('div');
-        propertiesSection.style.cssText = `
-            flex: 1;
+        // Properties container
+        const propertiesContainer = document.createElement('div');
+        propertiesContainer.className = 'properties-container';
+        propertiesContainer.style.cssText = `
+            flex: ${1 - DEFAULT_CONFIG.outlinerHeightRatio};
             min-height: 100px;
-            padding: 16px;
-            color: ${SIDEBAR_COLORS.TEXT_MUTED};
-            font-size: 12px;
             display: flex;
             flex-direction: column;
-            align-items: center;
-            justify-content: center;
-            text-align: center;
-            background: rgba(0,0,0,0.1);
+            overflow: hidden;
         `;
 
-        const icon = document.createElement('div');
-        icon.textContent = '⚙️';
-        icon.style.cssText = `
-            font-size: 28px;
-            margin-bottom: 10px;
-            opacity: 0.4;
-        `;
-        propertiesSection.appendChild(icon);
+        // Create properties panel with FPS display
+        this.propertiesPanel = new PropertiesPanel(this.fpsDisplay, {
+            fpsEnabled: false,
+            fpsOverlayEnabled: false,
+            showPerformanceSection: true,
+            showDisplaySection: true,
+        });
+        this.propertiesPanel.initialize();
 
-        const text = document.createElement('div');
-        text.innerHTML = `
-            <div style="font-weight: 600; margin-bottom: 4px;">Properties Panel</div>
-            <div style="font-size: 11px; opacity: 0.7;">Select an item to view properties</div>
-        `;
-        propertiesSection.appendChild(text);
+        // Add properties element
+        const propertiesElement = this.propertiesPanel.getElement();
+        if (propertiesElement) {
+            propertiesElement.style.height = '100%';
+            propertiesContainer.appendChild(propertiesElement);
+        }
 
-        this.contentWrapper.appendChild(propertiesSection);
+        this.contentWrapper.appendChild(propertiesContainer);
     }
 
     // ========================================================================
@@ -537,6 +618,25 @@ export class RightSidebar {
     }
 
     // ========================================================================
+    // KEYBOARD SHORTCUT
+    // ========================================================================
+
+    /**
+     * Setup keyboard shortcut for toggle
+     */
+    private setupKeyboardShortcut(): void {
+        document.addEventListener('keydown', (e) => {
+            // Alt + O to toggle outliner
+            if (e.altKey && e.key.toLowerCase() === 'o') {
+                e.preventDefault();
+                this.toggle();
+            }
+        });
+
+        console.log(`${LOG_PREFIX} Keyboard shortcut registered: Alt+O`);
+    }
+
+    // ========================================================================
     // COLLAPSE / EXPAND
     // ========================================================================
 
@@ -576,7 +676,7 @@ export class RightSidebar {
             this.onToggleCallback(true);
         }
 
-        console.log('[RightSidebar] Collapsed');
+        console.log(`${LOG_PREFIX} Collapsed`);
     }
 
     /**
@@ -604,7 +704,7 @@ export class RightSidebar {
             this.onToggleCallback(false);
         }
 
-        console.log('[RightSidebar] Expanded');
+        console.log(`${LOG_PREFIX} Expanded`);
     }
 
     // ========================================================================
@@ -622,7 +722,7 @@ export class RightSidebar {
             };
             localStorage.setItem('outlinerSidebarState', JSON.stringify(state));
         } catch (error) {
-            console.warn('[RightSidebar] Could not save state:', error);
+            console.warn(`${LOG_PREFIX} Could not save state:`, error);
         }
     }
 
@@ -677,7 +777,7 @@ export class RightSidebar {
                     }
                 }
 
-                console.log('[RightSidebar] Loaded saved state:', state);
+                console.log(`${LOG_PREFIX} Loaded saved state:`, state);
             } else {
                 // No saved state - apply default collapsed state
                 if (this.isCollapsed) {
@@ -706,7 +806,7 @@ export class RightSidebar {
                 }
             }
         } catch (error) {
-            console.warn('[RightSidebar] Could not load state:', error);
+            console.warn(`${LOG_PREFIX} Could not load state:`, error);
         }
     }
 
@@ -728,6 +828,22 @@ export class RightSidebar {
      */
     getOutlinerPanel(): OutlinerPanel | null {
         return this.outlinerPanel;
+    }
+
+    /**
+     * Get the properties panel
+     * @returns PropertiesPanel instance
+     */
+    getPropertiesPanel(): PropertiesPanel | null {
+        return this.propertiesPanel;
+    }
+
+    /**
+     * Get the FPS display instance
+     * @returns FPSDisplay instance or null
+     */
+    getFPSDisplay(): FPSDisplay | null {
+        return this.fpsDisplay;
     }
 
     /**
@@ -785,10 +901,24 @@ export class RightSidebar {
      * Dispose of the sidebar and its contents
      */
     dispose(): void {
+        console.log(`${LOG_PREFIX} Disposing...`);
+
         // Dispose outliner panel
         if (this.outlinerPanel) {
             this.outlinerPanel.dispose();
             this.outlinerPanel = null;
+        }
+
+        // Dispose properties panel
+        if (this.propertiesPanel) {
+            this.propertiesPanel.dispose();
+            this.propertiesPanel = null;
+        }
+
+        // Dispose FPS display
+        if (this.fpsDisplay) {
+            this.fpsDisplay.dispose();
+            this.fpsDisplay = null;
         }
 
         // Remove toggle button from body
@@ -812,6 +942,12 @@ export class RightSidebar {
         this.contentWrapper = null;
         this.resizeHandle = null;
 
-        console.log('[RightSidebar] Disposed');
+        console.log(`${LOG_PREFIX} ✓ Disposed`);
     }
 }
+
+// ============================================================================
+// EXPORT DEFAULT
+// ============================================================================
+
+export default RightSidebar;

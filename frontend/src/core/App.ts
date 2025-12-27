@@ -194,6 +194,16 @@ export class App {
             );
             this.modelImportButton.initialize();
 
+            // Connect WorldOutliner to ModelImportButton for bidirectional sync
+            // This enables:
+            // - Models appearing in outliner when placed
+            // - Deleting from outliner removes the 3D model
+            // - Deleting the 3D model removes from outliner
+            if (this.worldOutliner && this.modelImportButton) {
+                this.modelImportButton.setWorldOutliner(this.worldOutliner);
+                console.log('[App] ✓ Connected WorldOutliner to ModelImportButton');
+            }
+
             // Setup keyboard shortcuts
             this.setupKeyboardShortcuts();
 
@@ -223,6 +233,8 @@ export class App {
             console.log('=== Model Import ===');
             console.log('  📦 Import Model button → Import GLB/GLTF files');
             console.log('  Rolling stock auto-placed on track');
+            console.log('  Imported models appear in World Outliner');
+            console.log('  Delete from outliner removes 3D model');
             console.log('  [ / ] → Rotate models too');
             console.log('================');
             console.log('');

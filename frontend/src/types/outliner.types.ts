@@ -17,6 +17,14 @@ import { Vector3, Quaternion } from '@babylonjs/core/Maths/math';
 
 /**
  * Types of nodes that can exist in the outliner
+ * 
+ * - folder: Organisational folder (can contain children)
+ * - baseboard: Baseboard item
+ * - track: Track piece
+ * - rolling_stock: Trains, wagons, locomotives, etc.
+ * - scenery: Buildings, trees, vegetation, accessories, etc.
+ * - light: Light sources
+ * - model: Generic imported 3D model
  */
 export type OutlinerNodeType =
     | 'folder'          // Organisational folder (can contain children)
@@ -39,6 +47,7 @@ export type DefaultCategory =
 
 /**
  * Map of node types to their default parent category
+ * When a node is created with parentId: null, it auto-groups to its category folder
  */
 export const NODE_TYPE_TO_CATEGORY: Record<Exclude<OutlinerNodeType, 'folder'>, DefaultCategory> = {
     baseboard: 'Baseboards',
@@ -368,3 +377,38 @@ export const CATEGORY_ICONS: Record<DefaultCategory, string> = {
     'Scenery': '🏠',
     'Lights': '💡',
 };
+
+// ============================================================================
+// HELPER TYPES FOR MODEL IMPORT INTEGRATION
+// ============================================================================
+
+/**
+ * Map model categories to outliner node types
+ * Used by ModelImportButton when registering models with the outliner
+ */
+export const MODEL_CATEGORY_TO_NODE_TYPE: Record<string, OutlinerNodeType> = {
+    'rolling_stock': 'rolling_stock',
+    'locomotive': 'rolling_stock',
+    'coach': 'rolling_stock',
+    'wagon': 'rolling_stock',
+    'scenery': 'scenery',
+    'building': 'scenery',
+    'buildings': 'scenery',
+    'structure': 'scenery',
+    'vegetation': 'scenery',
+    'accessory': 'scenery',
+    'accessories': 'scenery',
+    'infrastructure': 'scenery',
+    'vehicles': 'scenery',
+    'figures': 'scenery',
+    'custom': 'model',
+};
+
+/**
+ * Get the outliner node type for a model category
+ * @param category - Model category string
+ * @returns Appropriate OutlinerNodeType
+ */
+export function getNodeTypeForCategory(category: string): OutlinerNodeType {
+    return MODEL_CATEGORY_TO_NODE_TYPE[category.toLowerCase()] || 'scenery';
+}

@@ -6,12 +6,12 @@
  * A professional slide-out sidebar containing:
  * - Import 3D Model button
  * - Track piece catalog (accordion sections)
- * - Settings toggles
+ * - Settings toggles (including Model Scale controls)
  * - Keyboard shortcuts reference
  * 
  * @module UIManager
  * @author Model Railway Workbench
- * @version 2.1.0
+ * @version 2.2.0 - Added embedded scale controls
  */
 
 import { TrackCatalog, type TrackCatalogEntry } from '../systems/track/TrackCatalog';
@@ -96,6 +96,13 @@ const THEME = {
 
 /**
  * UIManager - Unified slide-out sidebar interface
+ * 
+ * @example
+ * ```typescript
+ * const uiManager = new UIManager(document.body);
+ * uiManager.initialize((catalogId) => console.log('Selected:', catalogId));
+ * uiManager.setToggleCallback('autoSnap', (enabled) => trackSystem.setAutoSnap(enabled));
+ * ```
  */
 export class UIManager {
     // ========================================================================
@@ -127,6 +134,13 @@ export class UIManager {
 
     // Track buttons
     private trackButtons: Map<string, HTMLButtonElement> = new Map();
+
+    // ========================================================================
+    // SCALE CONTROLS PROPERTIES
+    // ========================================================================
+
+    /** Container for scale controls in settings */
+    private scaleControlsContainer: HTMLElement | null = null;
 
     // ========================================================================
     // CONSTRUCTOR & INITIALIZATION
@@ -161,6 +175,39 @@ export class UIManager {
      */
     setImportCallback(callback: ImportCallback): void {
         this.onImportClicked = callback;
+    }
+
+    // ========================================================================
+    // SCALE CONTROLS PUBLIC API
+    // ========================================================================
+
+    /**
+     * Add scale controls element to the settings section
+     * Call this from App.ts after both UIManager and ModelImportButton are initialized
+     * 
+     * @param scaleElement - Element from ModelImportButton.getScaleControlsElement()
+     * 
+     * @example
+     * ```typescript
+     * const scaleElement = modelImportButton.getScaleControlsElement();
+     * if (scaleElement) {
+     *     uiManager.addScaleControls(scaleElement);
+     * }
+     * ```
+     */
+    addScaleControls(scaleElement: HTMLElement): void {
+        if (!this.scaleControlsContainer) {
+            console.warn('[UIManager] Scale controls container not ready');
+            return;
+        }
+
+        // Clear any existing content
+        this.scaleControlsContainer.innerHTML = '';
+
+        // Add the scale controls
+        this.scaleControlsContainer.appendChild(scaleElement);
+
+        console.log('[UIManager] ✓ Scale controls added to settings');
     }
 
     // ========================================================================
@@ -330,14 +377,13 @@ export class UIManager {
                 align-items: center;
                 justify-content: space-between;
                 padding: 14px 20px;
-                background: rgba(255,255,255,0.03);
+                background: rgba(0,0,0,0.2);
                 cursor: pointer;
-                user-select: none;
                 transition: background ${THEME.transitionFast};
             }
             
             .mrw-section-header:hover {
-                background: rgba(255,255,255,0.08);
+                background: rgba(0,0,0,0.3);
             }
             
             .mrw-section-title {
@@ -345,10 +391,8 @@ export class UIManager {
                 align-items: center;
                 gap: 10px;
                 color: ${THEME.textLight};
-                font-size: 13px;
                 font-weight: 600;
-                text-transform: uppercase;
-                letter-spacing: 0.5px;
+                font-size: 13px;
             }
             
             .mrw-section-title .icon {
@@ -356,19 +400,10 @@ export class UIManager {
                 opacity: 0.8;
             }
             
-            .mrw-section-badge {
-                background: rgba(255,255,255,0.15);
-                color: ${THEME.textMuted};
-                font-size: 11px;
-                font-weight: 500;
-                padding: 2px 8px;
-                border-radius: 10px;
-            }
-            
             .mrw-section-arrow {
                 color: ${THEME.textMuted};
-                font-size: 12px;
-                transition: transform ${THEME.transitionMedium};
+                font-size: 10px;
+                transition: transform ${THEME.transitionFast};
             }
             
             .mrw-section-arrow.collapsed {
@@ -376,52 +411,50 @@ export class UIManager {
             }
             
             .mrw-section-content {
+                padding: 0 20px;
                 overflow: hidden;
                 transition: max-height ${THEME.transitionMedium}, padding ${THEME.transitionMedium};
-                background: rgba(0,0,0,0.2);
             }
             
             .mrw-section-content.collapsed {
                 max-height: 0 !important;
-                padding-top: 0 !important;
-                padding-bottom: 0 !important;
+                padding-top: 0;
+                padding-bottom: 0;
             }
             
             .mrw-section-content.expanded {
-                padding: 12px 16px;
+                padding: 16px 20px;
             }
             
             /* ============================================
-               IMPORT BUTTON
+               IMPORT SECTION
                ============================================ */
             .mrw-import-section {
                 padding: 16px 20px;
-                background: rgba(0,0,0,0.2);
                 border-bottom: 1px solid rgba(255,255,255,0.05);
             }
             
             .mrw-import-btn {
                 width: 100%;
-                padding: 14px 20px;
-                background: linear-gradient(135deg, ${THEME.accent} 0%, ${THEME.accentHover} 100%);
-                color: ${THEME.textLight};
-                border: none;
-                border-radius: ${THEME.borderRadius};
-                font-size: 14px;
-                font-weight: 600;
-                cursor: pointer;
+                padding: 12px 16px;
                 display: flex;
                 align-items: center;
                 justify-content: center;
                 gap: 10px;
+                background: linear-gradient(135deg, ${THEME.success} 0%, #219a52 100%);
+                border: none;
+                border-radius: ${THEME.borderRadius};
+                color: white;
+                font-size: 14px;
+                font-weight: 600;
+                cursor: pointer;
                 transition: all ${THEME.transitionFast};
-                box-shadow: ${THEME.shadowSm};
+                box-shadow: 0 2px 8px rgba(39, 174, 96, 0.3);
             }
             
             .mrw-import-btn:hover {
-                transform: translateY(-2px);
-                box-shadow: ${THEME.shadowMd};
-                background: linear-gradient(135deg, ${THEME.accentHover} 0%, ${THEME.accent} 100%);
+                transform: translateY(-1px);
+                box-shadow: 0 4px 12px rgba(39, 174, 96, 0.4);
             }
             
             .mrw-import-btn:active {
@@ -436,25 +469,29 @@ export class UIManager {
                TRACK BUTTONS
                ============================================ */
             .mrw-track-btn {
-                display: flex;
-                align-items: center;
-                gap: 10px;
                 width: 100%;
                 padding: 10px 12px;
-                margin-bottom: 4px;
+                display: flex;
+                align-items: center;
+                gap: 12px;
                 background: rgba(255,255,255,0.05);
-                border: 1px solid rgba(255,255,255,0.08);
+                border: 1px solid transparent;
                 border-radius: 6px;
                 color: ${THEME.textLight};
-                font-size: 12px;
+                font-size: 13px;
                 cursor: pointer;
                 transition: all ${THEME.transitionFast};
+                margin-bottom: 6px;
+                text-align: left;
+            }
+            
+            .mrw-track-btn:last-child {
+                margin-bottom: 0;
             }
             
             .mrw-track-btn:hover {
-                background: rgba(255,255,255,0.12);
-                border-color: rgba(255,255,255,0.15);
-                transform: translateX(4px);
+                background: rgba(255,255,255,0.1);
+                border-color: rgba(255,255,255,0.1);
             }
             
             .mrw-track-btn.selected {
@@ -468,14 +505,14 @@ export class UIManager {
                 display: flex;
                 align-items: center;
                 justify-content: center;
-                background: rgba(255,255,255,0.1);
-                border-radius: 4px;
+                background: rgba(0,0,0,0.3);
+                border-radius: 6px;
                 font-size: 16px;
             }
             
             .mrw-track-btn .track-info {
                 flex: 1;
-                text-align: left;
+                min-width: 0;
             }
             
             .mrw-track-btn .track-name {
@@ -727,6 +764,7 @@ export class UIManager {
             <span class="icon">📦</span>
             <span>Import 3D Model</span>
         `;
+
         button.onclick = () => {
             if (this.onImportClicked) {
                 this.onImportClicked();
@@ -737,40 +775,33 @@ export class UIManager {
         return section;
     }
 
-    private createTrackSections(parent: HTMLElement): void {
-        const allPieces = TrackCatalog.getAll();
-
-        // Group pieces
-        const groups = [
-            { id: 'straights', icon: '📏', title: 'Straight Track', pieces: allPieces.filter(p => p.type === 'straight') },
-            { id: 'curves-r1', icon: '↩️', title: 'R1 Curves (371mm)', pieces: allPieces.filter(p => p.type === 'curve' && p.id.includes('_r1_')) },
-            { id: 'curves-r2', icon: '↪️', title: 'R2 Curves (438mm)', pieces: allPieces.filter(p => p.type === 'curve' && p.id.includes('_r2_')) },
-            { id: 'curves-r4', icon: '🔄', title: 'R4 Curves (572mm)', pieces: allPieces.filter(p => p.type === 'curve' && p.id.includes('_r4_')) },
-            { id: 'switches-std', icon: '🔀', title: 'Standard Points', pieces: allPieces.filter(p => p.type === 'switch' && p.id.includes('switch_')) },
-            { id: 'switches-exp', icon: '🚄', title: 'Express Points', pieces: allPieces.filter(p => p.type === 'switch' && p.id.includes('express_')) },
-            { id: 'switches-curved', icon: '🌀', title: 'Curved Points', pieces: allPieces.filter(p => p.type === 'curved_switch') },
-            { id: 'crossings', icon: '✖️', title: 'Crossings', pieces: allPieces.filter(p => p.type === 'crossing') },
+    private createTrackSections(container: HTMLElement): void {
+        // Group tracks by category
+        const categories = [
+            { id: 'straights', name: 'Straight Tracks', icon: '━', filter: (e: TrackCatalogEntry) => e.type === 'straight' },
+            { id: 'curves', name: 'Curves', icon: '↪', filter: (e: TrackCatalogEntry) => e.type === 'curve' },
+            { id: 'switches', name: 'Points & Switches', icon: '⑂', filter: (e: TrackCatalogEntry) => e.type === 'switch' || e.type === 'curved_switch' },
+            { id: 'crossings', name: 'Crossings', icon: '╳', filter: (e: TrackCatalogEntry) => e.type === 'crossing' }
         ];
 
-        groups.forEach((group, index) => {
-            if (group.pieces.length > 0) {
-                parent.appendChild(this.createAccordionSection(
-                    group.id,
-                    group.icon,
-                    group.title,
-                    group.pieces,
-                    index === 0 // First section expanded
-                ));
+        const allPieces = TrackCatalog.getAll();
+
+        categories.forEach((cat, index) => {
+            const pieces = allPieces.filter(cat.filter);
+            if (pieces.length > 0) {
+                container.appendChild(
+                    this.createTrackSection(cat.id, cat.name, cat.icon, pieces, index === 0)
+                );
             }
         });
     }
 
-    private createAccordionSection(
+    private createTrackSection(
         id: string,
-        icon: string,
         title: string,
+        icon: string,
         pieces: TrackCatalogEntry[],
-        startExpanded: boolean
+        startExpanded: boolean = false
     ): HTMLElement {
         const section = document.createElement('div');
         section.className = 'mrw-section';
@@ -782,7 +813,7 @@ export class UIManager {
             <div class="mrw-section-title">
                 <span class="icon">${icon}</span>
                 <span>${title}</span>
-                <span class="mrw-section-badge">${pieces.length}</span>
+                <span style="opacity: 0.5; font-size: 11px;">(${pieces.length})</span>
             </div>
             <span class="mrw-section-arrow ${startExpanded ? '' : 'collapsed'}">▼</span>
         `;
@@ -861,11 +892,19 @@ export class UIManager {
         // Content
         const content = document.createElement('div');
         content.className = 'mrw-section-content expanded';
-        content.style.maxHeight = '500px';
+        content.style.maxHeight = '600px';
 
         // Toggles
         content.appendChild(this.createToggle('connectionIndicators', '🔴', 'Connection Indicators', true));
         content.appendChild(this.createToggle('autoSnap', '🧲', 'Auto-Snap', true));
+
+        // ================================================================
+        // SCALE CONTROLS CONTAINER
+        // This is where scale controls get injected via addScaleControls()
+        // ================================================================
+        this.scaleControlsContainer = document.createElement('div');
+        this.scaleControlsContainer.id = 'scale-controls-container';
+        content.appendChild(this.scaleControlsContainer);
 
         // Store reference
         this.accordionSections.set('settings', { header, content, isExpanded: true });
@@ -929,6 +968,9 @@ export class UIManager {
         const shortcuts = [
             { keys: ['[', ']'], desc: 'Rotate ±5°' },
             { keys: ['Shift', '[', ']'], desc: 'Rotate ±22.5°' },
+            { keys: ['S', 'Scroll'], desc: 'Scale model' },
+            { keys: ['R'], desc: 'Reset scale' },
+            { keys: ['L'], desc: 'Lock scale' },
             { keys: ['T'], desc: 'Toggle switch' },
             { keys: ['Del'], desc: 'Delete selected' },
             { keys: ['Esc'], desc: 'Cancel / Deselect' },
@@ -1064,13 +1106,13 @@ export class UIManager {
         const btn = this.trackButtons.get(catalogId);
         btn?.classList.add('selected');
 
-        // Notify
+        // Notify callback
         if (this.onTrackSelected) {
             this.onTrackSelected(catalogId);
         }
     }
 
-    clearSelection(): void {
+    deselectTrack(): void {
         if (this.selectedCatalogId) {
             const btn = this.trackButtons.get(this.selectedCatalogId);
             btn?.classList.remove('selected');
@@ -1078,16 +1120,24 @@ export class UIManager {
         }
     }
 
-    getSelectedCatalogId(): string | null {
-        return this.selectedCatalogId;
+    // ========================================================================
+    // TOGGLE CALLBACKS
+    // ========================================================================
+
+    /**
+     * Register a callback for toggle state changes
+     * @param id - Toggle identifier ('connectionIndicators', 'autoSnap', etc.)
+     * @param callback - Function called when toggle state changes
+     */
+    setToggleCallback(id: string, callback: ToggleCallback): void {
+        this.toggleCallbacks.set(id, callback);
     }
 
-    // ========================================================================
-    // TOGGLE CONTROLS
-    // ========================================================================
-
+    /**
+     * Alias for setToggleCallback (backward compatibility)
+     */
     registerToggleCallback(id: string, callback: ToggleCallback): void {
-        this.toggleCallbacks.set(id, callback);
+        this.setToggleCallback(id, callback);
     }
 
     getToggleState(id: string): boolean {
@@ -1141,6 +1191,7 @@ export class UIManager {
         this.sidebar = null;
         this.toggleButton = null;
         this.overlay = null;
+        this.scaleControlsContainer = null;
 
         this.accordionSections.clear();
         this.trackButtons.clear();

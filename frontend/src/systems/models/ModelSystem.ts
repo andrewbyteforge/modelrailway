@@ -686,6 +686,40 @@ export class ModelSystem {
         return true;
     }
 
+    /**
+     * Remove a model from internal tracking WITHOUT disposing scene objects
+     * 
+     * Used when the WorldOutliner has already disposed the meshes and we just
+     * need to clean up our internal Map tracking.
+     * 
+     * @param instanceId - Placed model instance ID
+     * @returns True if removed from tracking
+     */
+    removeModelFromTracking(instanceId: string): boolean {
+        const model = this.placedModels.get(instanceId);
+        if (!model) {
+            console.log(`${LOG_PREFIX} Model not found in tracking: ${instanceId}`);
+            return false;
+        }
+
+        // Deselect if selected
+        if (this.selectedModelId === instanceId) {
+            this.selectedModelId = null;
+        }
+
+        // Remove from hovered if applicable
+        if (this.hoveredModelId === instanceId) {
+            this.hoveredModelId = null;
+        }
+
+        // Just remove from map - don't dispose (already done by outliner)
+        this.placedModels.delete(instanceId);
+
+        console.log(`${LOG_PREFIX} Removed model from tracking (disposed externally): ${instanceId}`);
+
+        return true;
+    }
+
     // ========================================================================
     // SELECTION
     // ========================================================================

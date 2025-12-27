@@ -10,6 +10,7 @@
  * - Selection management
  * - Visibility and lock states
  * - Serialization for save/load
+ * - Proper scene object disposal for imported models
  * 
  * @module WorldOutliner
  */
@@ -18,6 +19,7 @@ import { Vector3, Quaternion } from '@babylonjs/core/Maths/math';
 import { Scene } from '@babylonjs/core/scene';
 import { AbstractMesh } from '@babylonjs/core/Meshes/abstractMesh';
 import { TransformNode } from '@babylonjs/core/Meshes/transformNode';
+import { Node } from '@babylonjs/core/node';
 
 import { OutlinerNode, generateNodeId } from './OutlinerNode';
 import { OutlinerEventEmitter } from './OutlinerEvents';
@@ -45,6 +47,22 @@ const DEFAULT_CATEGORIES: DefaultCategory[] = [
     'Scenery',
     'Lights',
 ];
+
+// ============================================================================
+// TYPE DEFINITIONS
+// ============================================================================
+
+/**
+ * Callback type for external cleanup when nodes are deleted
+ * @param nodeId - Outliner node ID being deleted
+ * @param sceneObjectId - Scene object ID (uniqueId as string)
+ * @param metadata - Node metadata for additional context
+ */
+export type OnNodeDeleteCallback = (
+    nodeId: string,
+    sceneObjectId: string | null,
+    metadata: Record<string, unknown>
+) => void;
 
 // ============================================================================
 // WORLD OUTLINER CLASS
@@ -102,6 +120,9 @@ export class WorldOutliner {
     /** Whether the system is initialized */
     private initialized: boolean;
 
+    /** Callbacks to notify external systems when nodes are deleted */
+    private onDeleteCallbacks: OnNodeDeleteCallback[];
+
     // ========================================================================
     // CONSTRUCTOR
     // ========================================================================
@@ -118,6 +139,7 @@ export class WorldOutliner {
         this.categoryFolderIds = new Map();
         this.events = new OutlinerEventEmitter();
         this.initialized = false;
+        this.onDeleteCallbacks = [];
 
         console.log('[WorldOutliner] Created');
     }
@@ -179,6 +201,53 @@ export class WorldOutliner {
      */
     isInitialized(): boolean {
         return this.initialized;
+    }
+
+    // ========================================================================
+    // EXTERNAL CLEANUP CALLBACKS
+    // ========================================================================
+
+    /**
+     * Register a callback to be notified when nodes are deleted
+     * Used by external systems (like ModelImportButton) to clean up their internal tracking
+     * 
+     * @param callback - Function to call when a node is deleted
+     */
+    onNodeDelete(callback: OnNodeDeleteCallback): void {
+        this.onDeleteCallbacks.push(callback);
+        console.log('[WorldOutliner] Registered node delete callback');
+    }
+
+    /**
+     * Remove a previously registered delete callback
+     * @param callback - The callback to remove
+     */
+    removeOnNodeDelete(callback: OnNodeDeleteCallback): void {
+        const index = this.onDeleteCallbacks.indexOf(callback);
+        if (index !== -1) {
+            this.onDeleteCallbacks.splice(index, 1);
+            console.log('[WorldOutliner] Removed node delete callback');
+        }
+    }
+
+    /**
+     * Notify all registered callbacks that a node is being deleted
+     * @param nodeId - Outliner node ID
+     * @param sceneObjectId - Scene object ID
+     * @param metadata - Node metadata
+     */
+    private notifyDeleteCallbacks(
+        nodeId: string,
+        sceneObjectId: string | null,
+        metadata: Record<string, unknown>
+    ): void {
+        for (const callback of this.onDeleteCallbacks) {
+            try {
+                callback(nodeId, sceneObjectId, metadata);
+            } catch (error) {
+                console.error('[WorldOutliner] Error in delete callback:', error);
+            }
+        }
     }
 
     // ========================================================================
@@ -337,7 +406,13 @@ export class WorldOutliner {
 
             // Delete all descendants first (depth-first)
             for (const descId of descendantIds.reverse()) {
-                this.removeNodeFromScene(descId);
+                const descNode = this.nodes.get(descId);
+                if (descNode) {
+                    // Notify external systems before deletion
+                    this.notifyDeleteCallbacks(descId, descNode.sceneObjectId, descNode.metadata);
+                    // Remove from scene
+                    this.removeNodeFromScene(descId);
+                }
                 this.nodes.delete(descId);
             }
 
@@ -352,6 +427,9 @@ export class WorldOutliner {
                     this.rootIds.splice(rootIndex, 1);
                 }
             }
+
+            // Notify external systems before deletion
+            this.notifyDeleteCallbacks(nodeId, node.sceneObjectId, node.metadata);
 
             // Remove from scene
             this.removeNodeFromScene(nodeId);
@@ -371,18 +449,107 @@ export class WorldOutliner {
     }
 
     /**
-     * Remove a node's scene object
+     * Find a scene node (Mesh or TransformNode) by its uniqueId
+     * @param uniqueIdString - The uniqueId as a string
+     * @returns The found node or null
+     */
+    private findSceneNodeByUniqueId(uniqueIdString: string): Node | null {
+        const uniqueId = parseInt(uniqueIdString, 10);
+        if (isNaN(uniqueId)) {
+            console.warn(`[WorldOutliner] Invalid uniqueId: ${uniqueIdString}`);
+            return null;
+        }
+
+        // Try to find as a mesh first
+        const mesh = this.scene.getMeshByUniqueId(uniqueId);
+        if (mesh) {
+            return mesh;
+        }
+
+        // Try to find as a transform node
+        const transformNode = this.scene.getTransformNodeByUniqueId(uniqueId);
+        if (transformNode) {
+            return transformNode;
+        }
+
+        // Try to find in all nodes (fallback)
+        for (const node of this.scene.getNodes()) {
+            if (node.uniqueId === uniqueId) {
+                return node;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Remove a node's scene object and all its children
+     * Properly handles both Meshes and TransformNodes (used for imported models)
+     * 
      * @param nodeId - Node ID
      */
     private removeNodeFromScene(nodeId: string): void {
         const node = this.nodes.get(nodeId);
-        if (!node?.sceneObjectId) return;
+        if (!node?.sceneObjectId) {
+            return;
+        }
 
-        // Find and dispose the scene object
-        const mesh = this.scene.getMeshById(node.sceneObjectId);
-        if (mesh) {
-            mesh.dispose();
-            console.log(`[WorldOutliner] Disposed scene object for ${node.name}`);
+        try {
+            // Find the scene object by uniqueId
+            const sceneNode = this.findSceneNodeByUniqueId(node.sceneObjectId);
+
+            if (!sceneNode) {
+                console.warn(`[WorldOutliner] Scene object not found for ${node.name} (uniqueId: ${node.sceneObjectId})`);
+                return;
+            }
+
+            // Get all descendants before disposing
+            const childMeshes: AbstractMesh[] = [];
+            const childTransformNodes: TransformNode[] = [];
+
+            // Collect all child meshes and transform nodes
+            if (sceneNode instanceof TransformNode || sceneNode instanceof AbstractMesh) {
+                const descendants = sceneNode.getDescendants(false);
+                for (const desc of descendants) {
+                    if (desc instanceof AbstractMesh) {
+                        childMeshes.push(desc);
+                    } else if (desc instanceof TransformNode) {
+                        childTransformNodes.push(desc);
+                    }
+                }
+            }
+
+            // Dispose all child meshes first (depth-first order)
+            for (const mesh of childMeshes) {
+                try {
+                    mesh.dispose(false, true); // Don't dispose materials, but dispose child meshes
+                } catch (e) {
+                    console.warn(`[WorldOutliner] Error disposing child mesh: ${mesh.name}`, e);
+                }
+            }
+
+            // Dispose child transform nodes
+            for (const tn of childTransformNodes) {
+                try {
+                    tn.dispose(false, true);
+                } catch (e) {
+                    console.warn(`[WorldOutliner] Error disposing child transform node: ${tn.name}`, e);
+                }
+            }
+
+            // Finally dispose the root node
+            if (sceneNode instanceof AbstractMesh) {
+                sceneNode.dispose(false, true);
+            } else if (sceneNode instanceof TransformNode) {
+                sceneNode.dispose(false, true);
+            } else {
+                // Generic node disposal
+                sceneNode.dispose();
+            }
+
+            console.log(`[WorldOutliner] ✓ Disposed scene object for ${node.name} (${childMeshes.length} meshes, ${childTransformNodes.length} transform nodes)`);
+        } catch (error) {
+            console.error(`[WorldOutliner] Error removing scene object for ${node.name}:`, error);
         }
     }
 
@@ -688,6 +855,8 @@ export class WorldOutliner {
 
     /**
      * Apply visibility to scene object
+     * Handles both Meshes and TransformNodes
+     * 
      * @param nodeId - Node ID
      * @param visible - Visibility state
      */
@@ -695,9 +864,21 @@ export class WorldOutliner {
         const node = this.nodes.get(nodeId);
         if (!node?.sceneObjectId) return;
 
-        const mesh = this.scene.getMeshById(node.sceneObjectId);
-        if (mesh) {
-            mesh.setEnabled(visible);
+        const sceneNode = this.findSceneNodeByUniqueId(node.sceneObjectId);
+        if (!sceneNode) return;
+
+        // Apply visibility to the node and all its descendants
+        if (sceneNode instanceof AbstractMesh) {
+            sceneNode.setEnabled(visible);
+        } else if (sceneNode instanceof TransformNode) {
+            sceneNode.setEnabled(visible);
+            // Also apply to all child meshes
+            const descendants = sceneNode.getDescendants(false);
+            for (const desc of descendants) {
+                if (desc instanceof AbstractMesh || desc instanceof TransformNode) {
+                    desc.setEnabled(visible);
+                }
+            }
         }
     }
 
@@ -969,18 +1150,18 @@ export class WorldOutliner {
         const node = this.nodes.get(nodeId);
         if (!node?.sceneObjectId) return;
 
-        const mesh = this.scene.getMeshById(node.sceneObjectId);
-        if (!mesh) return;
+        const sceneNode = this.findSceneNodeByUniqueId(node.sceneObjectId);
+        if (!sceneNode || !(sceneNode instanceof TransformNode || sceneNode instanceof AbstractMesh)) return;
 
         // Calculate world transform from parent chain
         const worldPosition = this.calculateWorldPosition(nodeId);
         const worldRotation = this.calculateWorldRotation(nodeId);
         const worldScale = this.calculateWorldScale(nodeId);
 
-        // Apply to mesh
-        mesh.position = worldPosition;
-        mesh.rotationQuaternion = worldRotation;
-        mesh.scaling = worldScale;
+        // Apply to mesh/transform node
+        sceneNode.position = worldPosition;
+        sceneNode.rotationQuaternion = worldRotation;
+        sceneNode.scaling = worldScale;
 
         // Update children recursively
         for (const childId of node.childIds) {
@@ -1178,6 +1359,7 @@ export class WorldOutliner {
         this.selectedIds.clear();
         this.categoryFolderIds.clear();
         this.events.clear();
+        this.onDeleteCallbacks = [];
         this.initialized = false;
 
         console.log('[WorldOutliner] Disposed');
