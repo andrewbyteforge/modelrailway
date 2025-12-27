@@ -1,15 +1,20 @@
 /**
  * InputManager.ts - Handles mouse interaction with track pieces
  * 
+ * Path: frontend/src/ui/InputManager.ts
+ * 
  * Features:
  * - Hover detection and highlighting
  * - Click to select pieces
  * - Drag to move pieces
  * - Integration with TrackSystem and BaseboardSystem
+ * - Coordination with TrackModelPlacer for rolling stock placement
  * 
  * Note: Ray is imported via side-effect in main.ts
  * 
  * @module InputManager
+ * @author Model Railway Workbench
+ * @version 1.1.0
  */
 
 import { Scene } from '@babylonjs/core/scene';
@@ -155,6 +160,21 @@ export class InputManager {
                 if (this.isDragging) {
                     this.stopDragging();
                 }
+            });
+
+            // ----------------------------------------------------------------
+            // Listen for track placement mode events from TrackModelPlacer
+            // This allows rolling stock to be placed on track without 
+            // InputManager interference
+            // ----------------------------------------------------------------
+            window.addEventListener('trackPlacementStart', () => {
+                console.log('[InputManager] Track placement mode started - disabling input');
+                this.setPlacementMode(true);
+            });
+
+            window.addEventListener('trackPlacementEnd', () => {
+                console.log('[InputManager] Track placement mode ended - re-enabling input');
+                this.setPlacementMode(false);
             });
 
             console.log('[InputManager] Initialized');
@@ -327,6 +347,9 @@ export class InputManager {
             this.selectedPiece = piece;
             this.highlightPiece(piece, HIGHLIGHT_COLORS.SELECTED);
 
+            // Set global flag so ModelImportButton knows track is selected
+            (window as any).__trackPieceSelected = true;
+
             console.log(`[InputManager] Selected: ${piece.id}`);
         } catch (error) {
             console.error('[InputManager] Error in selectPiece:', error);
@@ -342,6 +365,9 @@ export class InputManager {
                 this.unhighlightPiece(this.selectedPiece);
                 this.selectedPiece = null;
             }
+
+            // Clear global flag
+            (window as any).__trackPieceSelected = false;
         } catch (error) {
             console.error('[InputManager] Error in clearSelection:', error);
         }
