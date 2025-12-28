@@ -35,6 +35,17 @@ import { WorldOutliner } from '../systems/outliner/WorldOutliner';
 import { RightSidebar } from '../ui/panels/RightSidebar';
 
 // ============================================================================
+// TRAIN SYSTEM IMPORTS
+// ============================================================================
+import { TrainSystem } from '../systems/train/TrainSystem';
+import { TrainControlPanel } from '../ui/TrainControlPanel';
+
+// ============================================================================
+// TRANSFORM CONTROLS IMPORT
+// ============================================================================
+import { SidebarTransformControls } from '../ui/components/SidebarTransformControls';
+
+// ============================================================================
 // APP CLASS
 // ============================================================================
 
@@ -67,6 +78,17 @@ export class App {
     private highlightedMeshes: AbstractMesh[] = [];
 
     private placementMode: string | null = null;
+
+    // ========================================================================
+    // TRAIN SYSTEM PROPERTIES
+    // ========================================================================
+    private trainSystem: TrainSystem | null = null;
+    private trainControlPanel: TrainControlPanel | null = null;
+
+    // ========================================================================
+    // TRANSFORM CONTROLS PROPERTY
+    // ========================================================================
+    private transformControls: SidebarTransformControls | null = null;
 
     // ========================================================================
     // CONSTRUCTOR
@@ -136,6 +158,28 @@ export class App {
             this.trackSystem = new TrackSystem(this.scene, this.project);
             this.trackSystem.initialize();
 
+            // ================================================================
+            // INITIALIZE TRAIN SYSTEM
+            // ================================================================
+            console.log('[App] Initializing train system...');
+            this.trainSystem = new TrainSystem(this.scene, this.trackSystem, {
+                enableSound: true,
+                enableKeyboardControls: true,
+                enablePointerControls: true,
+                throttleStep: 0.1
+            });
+            this.trainSystem.initialize();
+
+            // Create control panel UI
+            this.trainControlPanel = new TrainControlPanel(this.trainSystem);
+            this.trainControlPanel.initialize();
+
+            // Expose to window for debugging (can be removed in production)
+            (window as any).trainSystem = this.trainSystem;
+            (window as any).scene = this.scene;
+
+            console.log('[App] ✓ Train system initialized');
+
             // Log available track pieces
             this.logAvailableTrackPieces();
 
@@ -186,6 +230,27 @@ export class App {
             );
             this.inputManager.initialize();
 
+            // ================================================================
+            // SYNC 3D SELECTION TO WORLD OUTLINER
+            // When user clicks a track piece in 3D view, highlight it in outliner
+            // ================================================================
+            this.inputManager.setOnSelectionChange((piece) => {
+                if (!this.worldOutliner) return;
+
+                if (piece) {
+                    // Find the outliner node for this piece
+                    const node = this.worldOutliner.findBySceneObjectId(piece.id);
+                    if (node) {
+                        // Select in outliner (this will also trigger highlighting)
+                        this.worldOutliner.select(node.id, false);
+                        console.log(`[App] Synced selection to outliner: ${node.name}`);
+                    }
+                } else {
+                    // Deselected - clear outliner selection
+                    this.worldOutliner.clearSelection();
+                }
+            });
+
             // Initialize model import button and system
             // Initialize model import button and system
             console.log('[App] Initializing model import system...');
@@ -200,6 +265,54 @@ export class App {
             if (scaleElement && this.uiManager) {
                 this.uiManager.addScaleControls(scaleElement);
                 console.log('[App] ✓ Scale controls added to sidebar');
+            }
+
+            // ================================================================
+            // INITIALIZE TRANSFORM CONTROLS (Position sliders)
+            // ================================================================
+            // Baseboard is at Y=0.95, rail top at Y=0.958
+            // Allow positioning from baseboard surface to well above
+            this.transformControls = new SidebarTransformControls({
+                positionRangeXZ: 0.6,  // ±600mm range for X/Z
+                positionMinY: 0.94,    // Slightly below baseboard surface
+                positionMaxY: 1.1,     // Well above baseboard  
+                showRotation: true,
+                showReset: true
+            });
+
+            // Connect to model system for direct manipulation
+            if (this.modelImportButton) {
+                const modelSystem = this.modelImportButton.getModelSystem();
+                if (modelSystem) {
+                    this.transformControls.connectToModelSystem(modelSystem);
+                }
+            }
+
+            // Add transform controls to sidebar settings (after scale controls)
+            if (this.uiManager) {
+                const transformElement = this.transformControls.getElement();
+                this.uiManager.addTransformControls(transformElement);
+                console.log('[App] ✓ Transform controls added to sidebar');
+            }
+
+            // Listen for model selection changes to update transform controls
+            if (this.modelImportButton) {
+                const modelSystem = this.modelImportButton.getModelSystem();
+                if (modelSystem) {
+                    // Create selection change observer
+                    this.scene.onBeforeRenderObservable.add(() => {
+                        const selected = modelSystem.getSelectedModel();
+                        const selectedId = selected?.id ?? null;
+
+                        // Only update if selection changed
+                        if (this.transformControls) {
+                            const currentId = (this.transformControls as any).currentModelId;
+                            if (currentId !== selectedId) {
+                                this.transformControls.setSelectedModel(selectedId);
+                            }
+                        }
+                    });
+                }
             }
 
             // Connect WorldOutliner to ModelImportButton for bidirectional sync
@@ -237,6 +350,16 @@ export class App {
             console.log('  Shift+I → Toggle connection indicators');
             console.log('  Shift+C → Clear all track');
             console.log('  T → Place test tracks');
+            console.log('');
+            console.log('=== Train Controls ===');
+            console.log('  Shift+T → Register train models');
+            console.log('  Click train → Select for control');
+            console.log('  ↑/W → Increase throttle');
+            console.log('  ↓/S → Decrease throttle');
+            console.log('  R → Toggle direction (when train selected)');
+            console.log('  Space → Brake (hold)');
+            console.log('  H → Horn');
+            console.log('  Click points → Toggle switch');
             console.log('');
             console.log('=== Model Import ===');
             console.log('  📦 Import Model button → Import GLB/GLTF files');
@@ -277,6 +400,11 @@ export class App {
             this.worldOutliner = new WorldOutliner(this.scene);
             this.worldOutliner.initialize();
 
+            // ================================================================
+            // SETUP OUTLINER EVENT LISTENERS
+            // ================================================================
+            this.setupOutlinerEventListeners();
+
             // Create the right sidebar with outliner panel
             this.rightSidebar = new RightSidebar(this.worldOutliner);
             this.rightSidebar.initialize();
@@ -307,6 +435,164 @@ export class App {
             console.log('[App] ✓ World Outliner initialized');
         } catch (error) {
             console.error('[App] Failed to initialize World Outliner:', error);
+        }
+    }
+
+    /**
+     * Setup event listeners for the World Outliner
+     * Handles deletions, visibility changes, etc.
+     */
+    private setupOutlinerEventListeners(): void {
+        if (!this.worldOutliner) return;
+
+        // ================================================================
+        // TRACK DELETION FIX:
+        // The WorldOutliner's deleteNode doesn't know how to delete track
+        // because track pieces have multiple meshes. We need to intercept
+        // the delete button click and handle track specially.
+        // ================================================================
+
+        // Store reference to original method
+        const outliner = this.worldOutliner;
+        const originalDeleteNode = outliner.deleteNode.bind(outliner);
+
+        // Create our custom delete handler
+        outliner.deleteNode = (nodeId: string, force: boolean = false): boolean => {
+            const node = outliner.getNode(nodeId);
+
+            if (!node) {
+                console.warn(`[App] Cannot delete - node not found: ${nodeId}`);
+                return false;
+            }
+
+            console.log(`[App] Deleting node: ${node.name} (type: ${node.type})`);
+
+            // ============================================================
+            // TRACK PIECES - Must go through TrackSystem
+            // ============================================================
+            if (node.type === 'track') {
+                const pieceId = (node.metadata?.pieceId as string) || node.sceneObjectId;
+
+                if (pieceId && this.trackSystem) {
+                    console.log(`[App] Deleting track piece: ${pieceId}`);
+
+                    // Remove via TrackSystem (handles meshes, graph, indicators)
+                    const removed = this.trackSystem.removePiece(pieceId);
+
+                    if (removed) {
+                        // Now remove from outliner's internal data structures
+                        // Access internal properties directly
+                        try {
+                            const nodesMap = (outliner as any).nodes as Map<string, any>;
+                            const rootIds = (outliner as any).rootIds as string[];
+                            const selectedIds = (outliner as any).selectedIds as Set<string>;
+
+                            if (nodesMap?.has(nodeId)) {
+                                const deletedNode = nodesMap.get(nodeId);
+
+                                // Remove from parent
+                                if (deletedNode.parentId && nodesMap.has(deletedNode.parentId)) {
+                                    const parent = nodesMap.get(deletedNode.parentId);
+                                    if (parent.childIds) {
+                                        const idx = parent.childIds.indexOf(nodeId);
+                                        if (idx !== -1) parent.childIds.splice(idx, 1);
+                                    }
+                                    if (typeof parent.removeChildId === 'function') {
+                                        parent.removeChildId(nodeId);
+                                    }
+                                } else if (rootIds) {
+                                    const idx = rootIds.indexOf(nodeId);
+                                    if (idx !== -1) rootIds.splice(idx, 1);
+                                }
+
+                                // Remove from selection
+                                selectedIds?.delete(nodeId);
+
+                                // Delete the node itself
+                                nodesMap.delete(nodeId);
+
+                                // Emit event
+                                outliner.events?.emitNodeDeleted?.(
+                                    nodeId,
+                                    node.type,
+                                    node.parentId ?? null,
+                                    []
+                                );
+                            }
+                        } catch (e) {
+                            console.error('[App] Error cleaning up outliner node:', e);
+                        }
+
+                        console.log(`[App] ✓ Track piece deleted: ${pieceId}`);
+                        return true;
+                    } else {
+                        console.warn(`[App] TrackSystem failed to remove: ${pieceId}`);
+                        return false;
+                    }
+                }
+
+                console.warn(`[App] Track piece has no pieceId: ${nodeId}`);
+                return false;
+            }
+
+            // ============================================================
+            // OTHER TYPES - Use original method
+            // ============================================================
+            return originalDeleteNode(nodeId, force);
+        };
+
+        // Listen for visibility changes
+        this.worldOutliner.events.on('node:visibility_changed', (event: {
+            nodeId: string;
+            visible: boolean;
+        }) => {
+            const node = this.worldOutliner?.getNode(event.nodeId);
+            if (!node) return;
+
+            console.log(`[App] Visibility changed: ${node.name} = ${event.visible}`);
+
+            // For track pieces, toggle visibility of all associated meshes
+            if (node.type === 'track' && node.metadata?.pieceId) {
+                const pieceId = node.metadata.pieceId as string;
+                this.setTrackPieceVisibility(pieceId, event.visible);
+            }
+        });
+
+        console.log('[App] ✓ Outliner event listeners configured (with track deletion fix)');
+    }
+
+    /**
+     * Set visibility of a track piece's meshes
+     * @param pieceId - Track piece ID
+     * @param visible - Whether to show or hide
+     */
+    private setTrackPieceVisibility(pieceId: string, visible: boolean): void {
+        for (const mesh of this.scene.meshes) {
+            if (mesh.name.includes(pieceId) ||
+                mesh.metadata?.pieceId === pieceId ||
+                mesh.parent?.name === pieceId) {
+                mesh.setEnabled(visible);
+            }
+        }
+    }
+
+    /**
+     * Delete a track piece properly through the TrackSystem
+     * This ensures the graph is updated correctly
+     * @param pieceId - Track piece ID to delete
+     */
+    private deleteTrackPiece(pieceId: string): void {
+        if (!this.trackSystem) return;
+
+        console.log(`[App] Deleting track piece: ${pieceId}`);
+        this.trackSystem.removePiece(pieceId);
+
+        // Also remove from outliner if not already done
+        if (this.worldOutliner) {
+            const node = this.worldOutliner.findBySceneObjectId(pieceId);
+            if (node) {
+                this.worldOutliner.deleteNode(node.id, true);
+            }
         }
     }
 
@@ -1016,6 +1302,10 @@ export class App {
 
     private setupKeyboardShortcuts(): void {
         try {
+            // ================================================================
+            // BABYLON.JS KEYBOARD OBSERVABLE
+            // Handles most keys but may miss Delete/Backspace in some browsers
+            // ================================================================
             this.scene.onKeyboardObservable.add((kbInfo) => {
                 // Only handle key down events
                 if (kbInfo.type !== 1) return;
@@ -1036,7 +1326,9 @@ export class App {
                         case 'r':
                         case 'R':
                             // Reset camera (no longer used for rotation)
-                            if (this.cameraSystem) {
+                            // Note: R is also used for train direction when a train is selected
+                            // The train system handles this via its own keyboard listener
+                            if (this.cameraSystem && !this.trainSystem?.getSelectedTrain()) {
                                 this.cameraSystem.resetOrbitCamera();
                                 console.log('[App] Camera reset');
                             }
@@ -1068,12 +1360,17 @@ export class App {
                             break;
 
                         case 'Escape':
-                            // First priority: deselect any selected track
-                            if (this.inputManager?.getSelectedPiece()) {
+                            // First priority: deselect any selected train
+                            if (this.trainSystem?.getSelectedTrain()) {
+                                this.trainSystem.deselectAll();
+                                console.log('[App] Train deselected');
+                            }
+                            // Second priority: deselect any selected track
+                            else if (this.inputManager?.getSelectedPiece()) {
                                 this.inputManager.clearSelection();
                                 console.log('[App] Track deselected');
                             }
-                            // Second priority: cancel placement mode
+                            // Third priority: cancel placement mode
                             else if (this.placementMode) {
                                 this.cancelPlacementMode();
                             }
@@ -1081,21 +1378,68 @@ export class App {
 
                         case 'Delete':
                         case 'Backspace':
-                            // Delete selected piece
+                            // Delete selected piece (track or model)
                             if (this.inputManager && this.trackSystem) {
                                 const selected = this.inputManager.getSelectedPiece();
                                 if (selected) {
-                                    this.trackSystem.removePiece(selected.id);
-                                    this.inputManager.clearSelection();
-                                    console.log(`[App] Deleted ${selected.id}`);
+                                    console.log(`[App] Delete key pressed - removing: ${selected.id}`);
+
+                                    // Remove from track system (handles meshes, graph, indicators)
+                                    const removed = this.trackSystem.removePiece(selected.id);
+
+                                    if (removed) {
+                                        // Remove from world outliner if present
+                                        if (this.worldOutliner) {
+                                            // Find the node by sceneObjectId (which is the pieceId)
+                                            const node = this.worldOutliner.findBySceneObjectId(selected.id);
+                                            if (node) {
+                                                // Access internal nodes map directly to remove
+                                                const nodesMap = (this.worldOutliner as any).nodes as Map<string, any>;
+                                                const rootIds = (this.worldOutliner as any).rootIds as string[];
+
+                                                if (nodesMap?.has(node.id)) {
+                                                    const deletedNode = nodesMap.get(node.id);
+                                                    if (deletedNode.parentId && nodesMap.has(deletedNode.parentId)) {
+                                                        const parent = nodesMap.get(deletedNode.parentId);
+                                                        if (parent.childIds) {
+                                                            const idx = parent.childIds.indexOf(node.id);
+                                                            if (idx !== -1) parent.childIds.splice(idx, 1);
+                                                        }
+                                                    } else if (rootIds) {
+                                                        const idx = rootIds.indexOf(node.id);
+                                                        if (idx !== -1) rootIds.splice(idx, 1);
+                                                    }
+                                                    nodesMap.delete(node.id);
+                                                }
+                                                console.log(`[App] Removed from outliner: ${node.name}`);
+                                            }
+                                        }
+
+                                        // Clear selection
+                                        this.inputManager.clearSelection();
+                                        console.log(`[App] ✓ Deleted ${selected.id}`);
+                                    } else {
+                                        console.warn(`[App] Failed to delete ${selected.id}`);
+                                    }
+                                } else {
+                                    console.log('[App] Delete pressed but no track selected');
                                 }
                             }
                             break;
 
                         case 't':
                         case 'T':
-                            // Place test tracks again
-                            if (!shiftKey) {
+                            // Shift+T = Register train models
+                            // T alone = Place test tracks
+                            if (shiftKey && this.trainSystem) {
+                                console.log('[App] Scanning for train models...');
+                                const count = this.trainSystem.scanAndRegisterTrains();
+                                if (count === 0) {
+                                    console.log('[App] No new trains found.');
+                                    console.log('[App] Tip: Model names should contain "train", "loco", "class", "coach", etc.');
+                                    console.log('[App] Or manually register with: trainSystem.registerExistingModel(meshNode, "Name")');
+                                }
+                            } else if (!shiftKey) {
                                 this.placeTestTracks();
                             }
                             break;
@@ -1111,6 +1455,7 @@ export class App {
                         case 's':
                         case 'S':
                             // Toggle auto-snap (with Shift)
+                            // Note: S without shift is handled by train system for throttle
                             if (shiftKey && this.trackSystem) {
                                 const enabled = this.trackSystem.toggleConnectionIndicators();
                                 // Also update UI toggle to stay in sync
@@ -1140,6 +1485,72 @@ export class App {
                 }
             });
 
+            // ================================================================
+            // FALLBACK: Window event listener for Delete/Backspace
+            // Some browsers don't pass these to Babylon's keyboard observable
+            // ================================================================
+            window.addEventListener('keydown', (event: KeyboardEvent) => {
+                // Only handle Delete and Backspace
+                if (event.key !== 'Delete' && event.key !== 'Backspace') return;
+
+                // Skip if typing in an input field
+                if (event.target instanceof HTMLInputElement ||
+                    event.target instanceof HTMLTextAreaElement ||
+                    event.target instanceof HTMLSelectElement) {
+                    return;
+                }
+
+                console.log(`[App] Delete key detected via window listener: "${event.key}"`);
+
+                // Delete selected track piece
+                if (this.inputManager && this.trackSystem) {
+                    const selected = this.inputManager.getSelectedPiece();
+                    if (selected) {
+                        event.preventDefault();
+                        console.log(`[App] Delete key pressed - removing: ${selected.id}`);
+
+                        // Remove from track system (handles meshes, graph, indicators)
+                        const removed = this.trackSystem.removePiece(selected.id);
+
+                        if (removed) {
+                            // Remove from world outliner if present
+                            if (this.worldOutliner) {
+                                const node = this.worldOutliner.findBySceneObjectId(selected.id);
+                                if (node) {
+                                    // Access internal nodes map directly to remove
+                                    const nodesMap = (this.worldOutliner as any).nodes as Map<string, any>;
+                                    const rootIds = (this.worldOutliner as any).rootIds as string[];
+
+                                    if (nodesMap?.has(node.id)) {
+                                        const deletedNode = nodesMap.get(node.id);
+                                        if (deletedNode.parentId && nodesMap.has(deletedNode.parentId)) {
+                                            const parent = nodesMap.get(deletedNode.parentId);
+                                            if (parent.childIds) {
+                                                const idx = parent.childIds.indexOf(node.id);
+                                                if (idx !== -1) parent.childIds.splice(idx, 1);
+                                            }
+                                        } else if (rootIds) {
+                                            const idx = rootIds.indexOf(node.id);
+                                            if (idx !== -1) rootIds.splice(idx, 1);
+                                        }
+                                        nodesMap.delete(node.id);
+                                    }
+                                    console.log(`[App] Removed from outliner: ${node.name}`);
+                                }
+                            }
+
+                            // Clear selection
+                            this.inputManager.clearSelection();
+                            console.log(`[App] ✓ Deleted ${selected.id}`);
+                        } else {
+                            console.warn(`[App] Failed to delete ${selected.id}`);
+                        }
+                    } else {
+                        console.log('[App] Delete pressed but no track selected');
+                    }
+                }
+            });
+
             console.log('[App] Keyboard shortcuts configured');
         } catch (error) {
             console.error('[App] Error setting up keyboard:', error);
@@ -1154,8 +1565,22 @@ export class App {
         try {
             console.log('[App] Starting render loop...');
 
+            // Track time for delta calculation
+            let lastTime = performance.now();
+
             this.engine.runRenderLoop(() => {
                 try {
+                    // Calculate delta time in seconds
+                    const currentTime = performance.now();
+                    const deltaTime = (currentTime - lastTime) / 1000;
+                    lastTime = currentTime;
+
+                    // Update train system (physics, movement, etc.)
+                    if (this.trainSystem) {
+                        this.trainSystem.update(deltaTime);
+                    }
+
+                    // Render scene
                     this.scene.render();
                 } catch (error) {
                     console.error('[App] Render error:', error);
@@ -1197,6 +1622,10 @@ export class App {
         return this.worldOutliner;
     }
 
+    getTrainSystem(): TrainSystem | null {
+        return this.trainSystem;
+    }
+
     // ========================================================================
     // CLEANUP
     // ========================================================================
@@ -1213,6 +1642,16 @@ export class App {
             if (this.highlightLayer) {
                 this.highlightLayer.dispose();
                 this.highlightLayer = null;
+            }
+
+            // Dispose Train System
+            if (this.trainControlPanel) {
+                this.trainControlPanel.dispose();
+                this.trainControlPanel = null;
+            }
+            if (this.trainSystem) {
+                this.trainSystem.dispose();
+                this.trainSystem = null;
             }
 
             // Dispose World Outliner

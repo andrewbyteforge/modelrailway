@@ -1,40 +1,103 @@
 /**
- * Train System Index
+ * Train System - Index
  * 
  * Path: frontend/src/systems/train/index.ts
  * 
- * Exports all train-related modules for convenient importing.
+ * Exports all train-related modules for easy importing.
  * 
- * @module TrainSystem
+ * @module train
  * @author Model Railway Workbench
  * @version 1.0.0
+ * 
+ * @example
+ * ```typescript
+ * import { TrainSystem, TrainController, PointsManager } from '../systems/train';
+ * 
+ * const trainSystem = new TrainSystem(scene, trackSystem);
+ * trainSystem.initialize();
+ * ```
  */
 
 // ============================================================================
-// MODEL LOADING
+// CORE SYSTEMS
 // ============================================================================
 
-export {
-    TrainModelLoader,
-    TRACK_GEOMETRY,
-    MODEL_SCALE_PRESETS,
-    OO_SCALE,
-    calculateRequiredScale,
-    realMMToOOMeters,
-    ooMetersToRealMM
-} from './TrainModelLoader';
+export { TrainSystem } from './TrainSystem';
+export type { TrainSystemConfig } from './TrainSystem';
 
+export { TrainController } from './TrainController';
 export type {
-    TrainModelConfig,
-    LoadedTrainModel,
-    ModelLoadStats,
-    ModelOrigin
-} from './TrainModelLoader';
+    TrainInfo,
+    TrainState,
+    TrainControllerConfig,
+    TrainEvents
+} from './TrainController';
 
 // ============================================================================
-// DEBUG UTILITIES
+// PHYSICS
 // ============================================================================
 
-export { TrainDebugUtils } from './TrainDebugUtils';
+export { TrainPhysics, DEFAULT_PHYSICS_CONFIG } from './TrainPhysics';
+export type {
+    TrainDirection,
+    BrakeState,
+    TrainPhysicsConfig,
+    TrainPhysicsState
+} from './TrainPhysics';
 
-export type { TrainDebugAPI } from './TrainDebugUtils';
+// ============================================================================
+// PATH FOLLOWING
+// ============================================================================
+
+export { TrainPathFollower } from './TrainPathFollower';
+export type {
+    TrackPosition,
+    WorldPose,
+    MovementResult,
+    PathFollowerConfig
+} from './TrainPathFollower';
+
+// ============================================================================
+// POINTS/SWITCHES
+// ============================================================================
+
+export { PointsManager } from './PointsManager';
+export type {
+    PointState,
+    PointRoutes,
+    PointData,
+    PointChangeEvent
+} from './PointsManager';
+
+// ============================================================================
+// AUDIO
+// ============================================================================
+
+export { TrainSoundManager } from './TrainSoundManager';
+export type {
+    SoundCategory,
+    SoundConfig
+} from './TrainSoundManager';
+
+// ============================================================================
+// VISUAL INDICATORS
+// ============================================================================
+
+export { PointsIndicator } from './PointsIndicator';
+export type { PointsIndicatorConfig } from './PointsIndicator';
+
+// ============================================================================
+// UTILITIES
+// ============================================================================
+
+export { TrackEdgeFinder } from './TrackEdgeFinder';
+export type {
+    EdgeFindResult,
+    EdgeFindOptions
+} from './TrackEdgeFinder';
+
+export { RollingStockPlacer } from './RollingStockPlacer';
+export type {
+    PendingModel,
+    PlacementResult
+} from './RollingStockPlacer';

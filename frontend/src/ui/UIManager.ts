@@ -210,6 +210,37 @@ export class UIManager {
         console.log('[UIManager] ✓ Scale controls added to settings');
     }
 
+
+
+
+    /**
+     * Add transform controls element to the Settings section
+     * @param element - The transform controls HTML element
+     */
+    addTransformControls(element: HTMLElement): void {
+        const settingsSection = this.accordionSections.get('settings');
+        if (settingsSection && settingsSection.content) {
+            // Add a divider
+            const divider = document.createElement('div');
+            divider.style.cssText = `
+                height: 1px;
+                background: rgba(255,255,255,0.1);
+                margin: 12px 0;
+            `;
+            settingsSection.content.appendChild(divider);
+
+            // Add the transform controls
+            settingsSection.content.appendChild(element);
+
+            // Update max-height to accommodate new content
+            settingsSection.content.style.maxHeight = '1500px';
+
+            console.log('[UIManager] ✓ Transform controls added to settings');
+        } else {
+            console.warn('[UIManager] Settings section not found, cannot add transform controls');
+        }
+    }
+
     // ========================================================================
     // STYLE INJECTION
     // ========================================================================

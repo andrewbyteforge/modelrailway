@@ -4,14 +4,18 @@
  * Path: frontend/src/systems/scaling/ScaleConstraints.ts
  * 
  * Provides constraint enforcement for scaling operations:
- * - Min/max clamping
+ * - Min/max clamping (0.25% to 100%)
  * - Snap-to-increment
  * - Bypass mode handling
  * - Category-specific defaults
  * 
+ * SCALE RANGE: 0.25% to 100%
+ * - MIN_SCALE = 0.0025 (0.25%)
+ * - MAX_SCALE = 1.0 (100%)
+ * 
  * @module ScaleConstraints
  * @author Model Railway Workbench
- * @version 1.0.0
+ * @version 2.0.0 - Updated scale range to 0.25%-100%
  */
 
 import {
@@ -32,6 +36,48 @@ const LOG_PREFIX = '[ScaleConstraints]';
 const EPSILON = 0.0001;
 
 // ============================================================================
+// GLOBAL SCALE LIMITS (0.25% to 100%)
+// ============================================================================
+
+/**
+ * Global scale limits applied to all categories
+ * User requested: 0.25% to 100%
+ */
+export const GLOBAL_SCALE_LIMITS = {
+    /** Absolute minimum scale (0.25% = 0.0025) */
+    MIN_SCALE: 0.0025,
+
+    /** Absolute maximum scale (100% = 1.0) */
+    MAX_SCALE: 1.0,
+
+    /** Minimum as percentage */
+    MIN_PERCENT: 0.25,
+
+    /** Maximum as percentage */
+    MAX_PERCENT: 100,
+} as const;
+
+/**
+ * Step sizes for scale adjustments
+ */
+export const SCALE_STEP_CONFIG = {
+    /** Fine adjustment step (0.1% = 0.001) */
+    FINE_STEP: 0.001,
+
+    /** Normal adjustment step (1% = 0.01) */
+    NORMAL_STEP: 0.01,
+
+    /** Coarse adjustment step (5% = 0.05) */
+    COARSE_STEP: 0.05,
+
+    /** Scroll wheel adjustment multiplier */
+    SCROLL_MULTIPLIER: 0.02,
+
+    /** Fine scroll multiplier (with Shift) */
+    FINE_SCROLL_MULTIPLIER: 0.005,
+} as const;
+
+// ============================================================================
 // SCALE CONSTRAINTS HANDLER CLASS
 // ============================================================================
 
@@ -39,7 +85,7 @@ const EPSILON = 0.0001;
  * ScaleConstraintsHandler - Manages scale validation and enforcement
  * 
  * Handles:
- * - Applying min/max constraints
+ * - Applying min/max constraints (0.25% to 100%)
  * - Snap-to-increment functionality
  * - Constraint bypass with modifier keys
  * - Per-category constraint management
@@ -48,7 +94,7 @@ const EPSILON = 0.0001;
  * ```typescript
  * const handler = new ScaleConstraintsHandler();
  * const result = handler.applyConstraints(2.5, 'building');
- * console.log(result.finalScale); // Clamped/snapped value
+ * console.log(result.finalScale); // Clamped to 1.0 (100%)
  * ```
  */
 export class ScaleConstraintsHandler {
@@ -71,6 +117,7 @@ export class ScaleConstraintsHandler {
      */
     constructor() {
         console.log(`${LOG_PREFIX} Created`);
+        console.log(`${LOG_PREFIX} Scale range: ${GLOBAL_SCALE_LIMITS.MIN_PERCENT}% - ${GLOBAL_SCALE_LIMITS.MAX_PERCENT}%`);
     }
 
     // ========================================================================
@@ -79,6 +126,8 @@ export class ScaleConstraintsHandler {
 
     /**
      * Apply constraints to a scale value
+     * 
+     * Enforces the global 0.25% - 100% range regardless of category
      * 
      * @param inputScale - Raw scale value to constrain
      * @param category - Asset category for constraint lookup
@@ -111,23 +160,34 @@ export class ScaleConstraintsHandler {
             }
 
             // ----------------------------------------------------------------
-            // STEP 2: Apply min/max clamping (unless bypassed)
+            // STEP 2: Apply GLOBAL min/max clamping (0.25% - 100%)
+            // Always enforce global limits, even with bypass
+            // ----------------------------------------------------------------
+            const globalClamped = this.clampToGlobalLimits(finalScale);
+            if (Math.abs(globalClamped - finalScale) > EPSILON) {
+                finalScale = globalClamped;
+                wasClamped = true;
+            }
+
+            // ----------------------------------------------------------------
+            // STEP 3: Apply category-specific clamping (if not bypassed)
+            // Only if category limits are MORE restrictive than global
             // ----------------------------------------------------------------
             if (!this.bypassActive || !constraints.allowBypass) {
-                const clampedScale = this.clampToRange(
+                const categoryClamped = this.clampToRange(
                     finalScale,
-                    constraints.minScale,
-                    constraints.maxScale
+                    Math.max(constraints.minScale, GLOBAL_SCALE_LIMITS.MIN_SCALE),
+                    Math.min(constraints.maxScale, GLOBAL_SCALE_LIMITS.MAX_SCALE)
                 );
 
-                if (Math.abs(clampedScale - finalScale) > EPSILON) {
-                    finalScale = clampedScale;
+                if (Math.abs(categoryClamped - finalScale) > EPSILON) {
+                    finalScale = categoryClamped;
                     wasClamped = true;
                 }
             }
 
             // ----------------------------------------------------------------
-            // STEP 3: Final validation
+            // STEP 4: Final validation
             // ----------------------------------------------------------------
             if (!this.isValidScale(finalScale)) {
                 console.warn(`${LOG_PREFIX} Invalid scale value: ${finalScale}`);
@@ -154,6 +214,19 @@ export class ScaleConstraintsHandler {
     }
 
     /**
+     * Clamp a value to global scale limits (0.25% - 100%)
+     * 
+     * @param scale - Scale value to clamp
+     * @returns Clamped value within global limits
+     */
+    clampToGlobalLimits(scale: number): number {
+        return Math.max(
+            GLOBAL_SCALE_LIMITS.MIN_SCALE,
+            Math.min(GLOBAL_SCALE_LIMITS.MAX_SCALE, scale)
+        );
+    }
+
+    /**
      * Check if a scale value would be valid for a category
      * 
      * @param scale - Scale value to check
@@ -161,6 +234,12 @@ export class ScaleConstraintsHandler {
      * @returns Whether the scale is within valid range
      */
     isScaleValid(scale: number, category: ScalableAssetCategory): boolean {
+        // First check global limits
+        if (scale < GLOBAL_SCALE_LIMITS.MIN_SCALE || scale > GLOBAL_SCALE_LIMITS.MAX_SCALE) {
+            return false;
+        }
+
+        // Then check category-specific limits
         const constraints = this.getEffectiveConstraints(category);
         return scale >= constraints.minScale && scale <= constraints.maxScale;
     }
@@ -174,7 +253,12 @@ export class ScaleConstraintsHandler {
      */
     getNearestValidScale(scale: number, category: ScalableAssetCategory): number {
         const constraints = this.getEffectiveConstraints(category);
-        return this.clampToRange(scale, constraints.minScale, constraints.maxScale);
+
+        // Apply both global and category limits
+        const minScale = Math.max(constraints.minScale, GLOBAL_SCALE_LIMITS.MIN_SCALE);
+        const maxScale = Math.min(constraints.maxScale, GLOBAL_SCALE_LIMITS.MAX_SCALE);
+
+        return this.clampToRange(scale, minScale, maxScale);
     }
 
     // ========================================================================
@@ -194,9 +278,9 @@ export class ScaleConstraintsHandler {
         // Round to nearest increment
         const snapped = Math.round(scale / increment) * increment;
 
-        // Ensure we don't snap to zero
-        if (snapped < increment) {
-            return increment;
+        // Ensure we don't snap below minimum
+        if (snapped < GLOBAL_SCALE_LIMITS.MIN_SCALE) {
+            return GLOBAL_SCALE_LIMITS.MIN_SCALE;
         }
 
         return snapped;
@@ -239,16 +323,30 @@ export class ScaleConstraintsHandler {
     }
 
     /**
-     * Get min/max range for a category
+     * Get the valid range for a category (respecting global limits)
      * 
      * @param category - Asset category
-     * @returns Object with min and max scale
+     * @returns Object with min and max scale values
      */
-    getScaleRange(category: ScalableAssetCategory): { min: number; max: number } {
+    getValidRange(category: ScalableAssetCategory): { min: number; max: number } {
         const constraints = this.getEffectiveConstraints(category);
         return {
-            min: constraints.minScale,
-            max: constraints.maxScale
+            min: Math.max(constraints.minScale, GLOBAL_SCALE_LIMITS.MIN_SCALE),
+            max: Math.min(constraints.maxScale, GLOBAL_SCALE_LIMITS.MAX_SCALE)
+        };
+    }
+
+    /**
+     * Get the global valid range
+     * 
+     * @returns Object with min and max scale values
+     */
+    getGlobalRange(): { min: number; max: number; minPercent: number; maxPercent: number } {
+        return {
+            min: GLOBAL_SCALE_LIMITS.MIN_SCALE,
+            max: GLOBAL_SCALE_LIMITS.MAX_SCALE,
+            minPercent: GLOBAL_SCALE_LIMITS.MIN_PERCENT,
+            maxPercent: GLOBAL_SCALE_LIMITS.MAX_PERCENT
         };
     }
 
@@ -258,12 +356,12 @@ export class ScaleConstraintsHandler {
 
     /**
      * Enable constraint bypass mode
-     * Allows scale values outside normal limits
+     * Note: Global limits (0.25% - 100%) are ALWAYS enforced
      */
     enableBypass(): void {
         if (!this.bypassActive) {
             this.bypassActive = true;
-            console.log(`${LOG_PREFIX} Bypass mode enabled`);
+            console.log(`${LOG_PREFIX} Bypass mode enabled (global limits still apply)`);
         }
     }
 
@@ -301,7 +399,7 @@ export class ScaleConstraintsHandler {
 
     /**
      * Get effective constraints for a category
-     * Merges defaults with custom overrides
+     * Merges defaults with custom overrides, respecting global limits
      * 
      * @param category - Asset category
      * @param forcedOverrides - Additional forced overrides
@@ -318,11 +416,17 @@ export class ScaleConstraintsHandler {
         const customOverrides = this.customConstraints.get(category) || {};
 
         // Merge all together
-        return {
+        const merged = {
             ...defaults,
             ...customOverrides,
             ...forcedOverrides
         };
+
+        // Enforce global limits on the merged constraints
+        merged.minScale = Math.max(merged.minScale, GLOBAL_SCALE_LIMITS.MIN_SCALE);
+        merged.maxScale = Math.min(merged.maxScale, GLOBAL_SCALE_LIMITS.MAX_SCALE);
+
+        return merged;
     }
 
     /**
@@ -341,6 +445,14 @@ export class ScaleConstraintsHandler {
                 console.error(`${LOG_PREFIX} Invalid constraints: minScale > maxScale`);
                 return;
             }
+        }
+
+        // Enforce global limits
+        if (constraints.minScale !== undefined) {
+            constraints.minScale = Math.max(constraints.minScale, GLOBAL_SCALE_LIMITS.MIN_SCALE);
+        }
+        if (constraints.maxScale !== undefined) {
+            constraints.maxScale = Math.min(constraints.maxScale, GLOBAL_SCALE_LIMITS.MAX_SCALE);
         }
 
         if (constraints.snapIncrement !== undefined && constraints.snapIncrement < 0) {
@@ -377,7 +489,13 @@ export class ScaleConstraintsHandler {
      * @returns Default constraints
      */
     getDefaultConstraints(category: ScalableAssetCategory): ScaleConstraints {
-        return { ...DEFAULT_SCALE_CONSTRAINTS[category] };
+        const defaults = { ...DEFAULT_SCALE_CONSTRAINTS[category] };
+
+        // Enforce global limits
+        defaults.minScale = Math.max(defaults.minScale, GLOBAL_SCALE_LIMITS.MIN_SCALE);
+        defaults.maxScale = Math.min(defaults.maxScale, GLOBAL_SCALE_LIMITS.MAX_SCALE);
+
+        return defaults;
     }
 
     // ========================================================================
@@ -385,7 +503,7 @@ export class ScaleConstraintsHandler {
     // ========================================================================
 
     /**
-     * Check if a scale value is valid (finite positive number)
+     * Check if a scale value is valid (finite positive number within global range)
      * 
      * @param scale - Scale value to validate
      * @returns Whether scale is valid
@@ -394,7 +512,8 @@ export class ScaleConstraintsHandler {
         return (
             typeof scale === 'number' &&
             Number.isFinite(scale) &&
-            scale > 0
+            scale >= GLOBAL_SCALE_LIMITS.MIN_SCALE &&
+            scale <= GLOBAL_SCALE_LIMITS.MAX_SCALE
         );
     }
 
@@ -419,20 +538,28 @@ export class ScaleConstraintsHandler {
      * 
      * @param scale - Scale factor (1.0 = 100%)
      * @param decimals - Decimal places
-     * @returns Percentage string (e.g., "150%")
+     * @returns Percentage string (e.g., "50%")
      */
     scaleToPercentage(scale: number, decimals: number = 1): string {
-        return `${(scale * 100).toFixed(decimals)}%`;
+        const percent = scale * 100;
+        if (percent < 1) {
+            return `${percent.toFixed(2)}%`;
+        } else if (percent < 10) {
+            return `${percent.toFixed(decimals)}%`;
+        } else {
+            return `${percent.toFixed(0)}%`;
+        }
     }
 
     /**
-     * Convert percentage to scale factor
+     * Convert percentage to scale factor (clamped to global limits)
      * 
      * @param percentage - Percentage value (100 = 1.0)
      * @returns Scale factor
      */
     percentageToScale(percentage: number): number {
-        return percentage / 100;
+        const scale = percentage / 100;
+        return this.clampToGlobalLimits(scale);
     }
 
     /**
@@ -445,6 +572,31 @@ export class ScaleConstraintsHandler {
     getScaleChangePercent(oldScale: number, newScale: number): number {
         if (oldScale === 0) return 0;
         return ((newScale - oldScale) / oldScale) * 100;
+    }
+
+    /**
+     * Get adaptive step size based on current scale
+     * Smaller scales get finer steps
+     * 
+     * @param currentScale - Current scale value
+     * @param fine - Whether to use fine adjustment
+     * @returns Appropriate step size
+     */
+    getAdaptiveStep(currentScale: number, fine: boolean = false): number {
+        if (fine) {
+            return SCALE_STEP_CONFIG.FINE_STEP;
+        }
+
+        // Adaptive step: smaller steps for smaller scales
+        if (currentScale < 0.01) {
+            return 0.0005;  // 0.05% steps for very small scales
+        } else if (currentScale < 0.1) {
+            return 0.005;   // 0.5% steps for small scales
+        } else if (currentScale < 0.5) {
+            return 0.01;    // 1% steps for medium scales
+        } else {
+            return 0.05;    // 5% steps for large scales
+        }
     }
 
     // ========================================================================
@@ -489,4 +641,48 @@ export function resetGlobalConstraintsHandler(): void {
         globalConstraintsHandler.dispose();
         globalConstraintsHandler = null;
     }
+}
+
+// ============================================================================
+// CONVENIENCE FUNCTIONS
+// ============================================================================
+
+/**
+ * Clamp a scale value to global limits (0.25% - 100%)
+ * 
+ * @param scale - Scale value to clamp
+ * @returns Clamped value
+ */
+export function clampScaleToGlobalLimits(scale: number): number {
+    return Math.max(
+        GLOBAL_SCALE_LIMITS.MIN_SCALE,
+        Math.min(GLOBAL_SCALE_LIMITS.MAX_SCALE, scale)
+    );
+}
+
+/**
+ * Format scale as percentage string
+ * 
+ * @param scale - Scale factor
+ * @returns Percentage string
+ */
+export function formatScalePercent(scale: number): string {
+    const percent = scale * 100;
+    if (percent < 1) {
+        return `${percent.toFixed(2)}%`;
+    } else if (percent < 10) {
+        return `${percent.toFixed(1)}%`;
+    } else {
+        return `${percent.toFixed(0)}%`;
+    }
+}
+
+/**
+ * Convert percentage to scale factor
+ * 
+ * @param percent - Percentage value
+ * @returns Scale factor (clamped to global limits)
+ */
+export function percentToScale(percent: number): number {
+    return clampScaleToGlobalLimits(percent / 100);
 }

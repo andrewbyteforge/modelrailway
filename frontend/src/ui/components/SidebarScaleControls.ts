@@ -5,16 +5,21 @@
  * 
  * A compact control panel designed to fit in the UIManager sidebar settings.
  * Provides:
- * - Scale: slider, input, and preset buttons
+ * - Scale: slider, input, and preset buttons (0.25% - 100%)
  * - Height: slider for Y-position adjustment (lift/lower models)
+ * 
+ * SCALE RANGE: 0.25% to 100%
+ * - MIN_SCALE_PERCENT = 0.25
+ * - MAX_SCALE_PERCENT = 100
  * 
  * @module SidebarScaleControls
  * @author Model Railway Workbench
- * @version 2.0.0 - Added height controls
+ * @version 3.0.0 - Updated scale range to 0.25%-100%
  */
 
 import type { ScaleManager } from '../../systems/scaling/ScaleManager';
 import type { ScaleEvent } from '../../types/scaling.types';
+import { GLOBAL_SCALE_LIMITS } from '../../systems/scaling/ScaleConstraints';
 
 // ============================================================================
 // CONSTANTS
@@ -22,11 +27,17 @@ import type { ScaleEvent } from '../../types/scaling.types';
 
 const LOG_PREFIX = '[SidebarScaleControls]';
 
-/** Minimum scale as percentage */
-const MIN_SCALE_PERCENT = 6;
+/** Minimum scale as percentage (0.25%) */
+const MIN_SCALE_PERCENT = GLOBAL_SCALE_LIMITS.MIN_PERCENT;
 
-/** Maximum scale as percentage */
-const MAX_SCALE_PERCENT = 500;
+/** Maximum scale as percentage (100%) */
+const MAX_SCALE_PERCENT = GLOBAL_SCALE_LIMITS.MAX_PERCENT;
+
+/** Minimum scale as factor (0.0025) */
+const MIN_SCALE_FACTOR = GLOBAL_SCALE_LIMITS.MIN_SCALE;
+
+/** Maximum scale as factor (1.0) */
+const MAX_SCALE_FACTOR = GLOBAL_SCALE_LIMITS.MAX_SCALE;
 
 /** Minimum height offset in mm (can go below table surface) */
 const MIN_HEIGHT_MM = -50;
@@ -53,6 +64,8 @@ export type HeightChangeCallback = (objectId: string, heightOffset: number) => v
 
 /**
  * SidebarScaleControls - Compact scale & height UI for sidebar integration
+ * 
+ * Scale range: 0.25% to 100%
  */
 export class SidebarScaleControls {
     // ========================================================================
@@ -87,7 +100,7 @@ export class SidebarScaleControls {
     /** Currently selected object ID */
     private selectedObjectId: string | null = null;
 
-    /** Current scale value */
+    /** Current scale value (0.0025 to 1.0) */
     private currentScale: number = 1.0;
 
     /** Current height offset in meters */
@@ -109,6 +122,7 @@ export class SidebarScaleControls {
     constructor() {
         this.container = this.createUI();
         console.log(`${LOG_PREFIX} Created`);
+        console.log(`${LOG_PREFIX} Scale range: ${MIN_SCALE_PERCENT}% - ${MAX_SCALE_PERCENT}%`);
     }
 
     // ========================================================================
@@ -187,18 +201,26 @@ export class SidebarScaleControls {
         return wrapper;
     }
 
+    /**
+     * Create the scale controls section
+     * Uses a non-linear slider for better control at small values
+     */
     private createScaleSection(): void {
-        // Scale label
+        // Scale label with range info
         const scaleLabel = document.createElement('div');
         scaleLabel.style.cssText = `
             display: flex;
             align-items: center;
+            justify-content: space-between;
             gap: 6px;
             margin-bottom: 6px;
             color: #aaa;
             font-size: 11px;
         `;
-        scaleLabel.innerHTML = `<span>📐</span><span>Scale</span>`;
+        scaleLabel.innerHTML = `
+            <span><span style="margin-right: 4px;">📐</span>Scale</span>
+            <span style="font-size: 9px; color: #666;">${MIN_SCALE_PERCENT}% - ${MAX_SCALE_PERCENT}%</span>
+        `;
         this.controlsWrapper!.appendChild(scaleLabel);
 
         // Slider row
@@ -210,11 +232,13 @@ export class SidebarScaleControls {
             margin-bottom: 8px;
         `;
 
+        // Create slider - uses 0-100 range internally, mapped non-linearly to scale
         this.scaleSlider = document.createElement('input');
         this.scaleSlider.type = 'range';
-        this.scaleSlider.min = String(MIN_SCALE_PERCENT);
-        this.scaleSlider.max = String(MAX_SCALE_PERCENT);
-        this.scaleSlider.value = '100';
+        this.scaleSlider.min = '0';
+        this.scaleSlider.max = '100';
+        this.scaleSlider.step = '0.1';
+        this.scaleSlider.value = '100'; // 100% by default
         this.scaleSlider.style.cssText = `
             flex: 1;
             height: 4px;
@@ -226,6 +250,7 @@ export class SidebarScaleControls {
             cursor: pointer;
         `;
 
+        // Scale input field
         this.scaleInput = document.createElement('input');
         this.scaleInput.type = 'text';
         this.scaleInput.value = '100%';
@@ -244,7 +269,7 @@ export class SidebarScaleControls {
         sliderRow.appendChild(this.scaleInput);
         this.controlsWrapper!.appendChild(sliderRow);
 
-        // Preset buttons row
+        // Preset buttons row - updated for 0.25% - 100% range
         this.presetsRow = document.createElement('div');
         this.presetsRow.style.cssText = `
             display: flex;
@@ -253,12 +278,14 @@ export class SidebarScaleControls {
             margin-bottom: 8px;
         `;
 
+        // Presets appropriate for 0.25% - 100% range
         const presets = [
-            { label: '50%', value: 0.5 },
-            { label: '75%', value: 0.75 },
-            { label: '100%', value: 1.0 },
-            { label: '150%', value: 1.5 },
-            { label: '200%', value: 2.0 }
+            { label: '1%', value: 0.01 },
+            { label: '5%', value: 0.05 },
+            { label: '10%', value: 0.10 },
+            { label: '25%', value: 0.25 },
+            { label: '50%', value: 0.50 },
+            { label: '100%', value: 1.0 }
         ];
 
         presets.forEach(preset => {
@@ -342,6 +369,9 @@ export class SidebarScaleControls {
         this.attachScaleInputHandlers();
     }
 
+    /**
+     * Create the height controls section
+     */
     private createHeightSection(): void {
         // Height label
         const heightLabel = document.createElement('div');
@@ -457,23 +487,62 @@ export class SidebarScaleControls {
         this.attachHeightInputHandlers();
     }
 
+    // ========================================================================
+    // SCALE SLIDER MAPPING (Non-linear for better small value control)
+    // ========================================================================
+
+    /**
+     * Convert slider position (0-100) to scale factor (0.0025-1.0)
+     * Uses a power curve for better control at small values
+     */
+    private sliderToScale(sliderValue: number): number {
+        // Map 0-100 slider to 0.0025-1.0 scale using power curve
+        const normalized = sliderValue / 100; // 0 to 1
+
+        // Power curve gives more precision at low end
+        // scale = minScale + (maxScale - minScale) * normalized^2
+        const scale = MIN_SCALE_FACTOR + (MAX_SCALE_FACTOR - MIN_SCALE_FACTOR) * Math.pow(normalized, 2);
+
+        return Math.max(MIN_SCALE_FACTOR, Math.min(MAX_SCALE_FACTOR, scale));
+    }
+
+    /**
+     * Convert scale factor (0.0025-1.0) to slider position (0-100)
+     */
+    private scaleToSlider(scale: number): number {
+        // Inverse of power curve
+        const normalized = Math.sqrt((scale - MIN_SCALE_FACTOR) / (MAX_SCALE_FACTOR - MIN_SCALE_FACTOR));
+        return Math.max(0, Math.min(100, normalized * 100));
+    }
+
+    // ========================================================================
+    // INPUT HANDLERS
+    // ========================================================================
+
+    /**
+     * Attach event handlers for scale inputs
+     */
     private attachScaleInputHandlers(): void {
-        // Slider change
+        // Slider change - uses non-linear mapping
         this.scaleSlider?.addEventListener('input', () => {
             if (this.isLocked) return;
-            const percent = parseInt(this.scaleSlider!.value, 10);
-            this.setScale(percent / 100);
+            const sliderValue = parseFloat(this.scaleSlider!.value);
+            const scaleFactor = this.sliderToScale(sliderValue);
+            this.setScale(scaleFactor);
         });
 
-        // Input field change
+        // Input field change - direct percentage input
         this.scaleInput?.addEventListener('change', () => {
             if (this.isLocked) return;
             const text = this.scaleInput!.value.replace('%', '').trim();
             const percent = parseFloat(text);
             if (!isNaN(percent)) {
+                // Clamp to valid range
                 const clamped = Math.max(MIN_SCALE_PERCENT, Math.min(MAX_SCALE_PERCENT, percent));
-                this.setScale(clamped / 100);
+                const scaleFactor = clamped / 100;
+                this.setScale(scaleFactor);
             } else {
+                // Invalid input - restore display
                 this.updateScaleDisplay();
             }
         });
@@ -483,6 +552,9 @@ export class SidebarScaleControls {
         });
     }
 
+    /**
+     * Attach event handlers for height inputs
+     */
     private attachHeightInputHandlers(): void {
         // Slider change
         this.heightSlider?.addEventListener('input', () => {
@@ -590,7 +662,7 @@ export class SidebarScaleControls {
         this.updateHeightDisplay();
         this.updateLockButton();
 
-        console.log(`${LOG_PREFIX} Object selected: ${objectId}`);
+        console.log(`${LOG_PREFIX} Object selected: ${objectId} (scale: ${(currentScale * 100).toFixed(1)}%)`);
     }
 
     /**
@@ -613,19 +685,31 @@ export class SidebarScaleControls {
     // SCALE OPERATIONS
     // ========================================================================
 
+    /**
+     * Set the scale factor (0.0025 to 1.0)
+     */
     private setScale(scaleFactor: number): void {
         if (!this.scaleManager || !this.selectedObjectId || this.isLocked) return;
 
-        this.currentScale = scaleFactor;
-        this.scaleManager.setScale(this.selectedObjectId, scaleFactor);
+        // Clamp to valid range
+        const clamped = Math.max(MIN_SCALE_FACTOR, Math.min(MAX_SCALE_FACTOR, scaleFactor));
+
+        this.currentScale = clamped;
+        this.scaleManager.setScale(this.selectedObjectId, clamped);
         this.updateScaleDisplay();
     }
 
+    /**
+     * Reset scale to 100%
+     */
     private resetScale(): void {
         if (!this.scaleManager || !this.selectedObjectId) return;
         this.scaleManager.resetScale(this.selectedObjectId);
     }
 
+    /**
+     * Toggle scale lock
+     */
     private toggleLock(): void {
         if (!this.scaleManager || !this.selectedObjectId) return;
         this.scaleManager.toggleLock(this.selectedObjectId);
@@ -635,6 +719,9 @@ export class SidebarScaleControls {
     // HEIGHT OPERATIONS
     // ========================================================================
 
+    /**
+     * Set height offset in meters
+     */
     private setHeightOffset(heightMeters: number): void {
         if (!this.selectedObjectId) return;
 
@@ -647,12 +734,17 @@ export class SidebarScaleControls {
         }
     }
 
+    /**
+     * Reset height to 0
+     */
     private resetHeight(): void {
         this.setHeightOffset(0);
     }
 
+    /**
+     * Snap model to table surface
+     */
     private snapToTable(): void {
-        // Setting to 0 means sitting directly on the placement surface
         this.setHeightOffset(0);
     }
 
@@ -680,20 +772,35 @@ export class SidebarScaleControls {
     // DISPLAY UPDATES
     // ========================================================================
 
+    /**
+     * Update scale display elements
+     */
     private updateScaleDisplay(): void {
-        const percent = Math.round(this.currentScale * 100);
+        const percent = this.currentScale * 100;
 
+        // Update slider using non-linear mapping
         if (this.scaleSlider) {
-            this.scaleSlider.value = String(Math.max(MIN_SCALE_PERCENT, Math.min(MAX_SCALE_PERCENT, percent)));
+            this.scaleSlider.value = String(this.scaleToSlider(this.currentScale));
             this.scaleSlider.disabled = this.isLocked;
         }
 
+        // Update input field with percentage
         if (this.scaleInput) {
-            this.scaleInput.value = `${percent}%`;
+            // Format based on value
+            if (percent < 1) {
+                this.scaleInput.value = `${percent.toFixed(2)}%`;
+            } else if (percent < 10) {
+                this.scaleInput.value = `${percent.toFixed(1)}%`;
+            } else {
+                this.scaleInput.value = `${percent.toFixed(0)}%`;
+            }
             this.scaleInput.disabled = this.isLocked;
         }
     }
 
+    /**
+     * Update height display elements
+     */
     private updateHeightDisplay(): void {
         const mm = Math.round(this.currentHeightOffset * 1000);
 
@@ -706,6 +813,9 @@ export class SidebarScaleControls {
         }
     }
 
+    /**
+     * Update lock button appearance
+     */
     private updateLockButton(): void {
         if (!this.lockBtn) return;
 
@@ -736,6 +846,20 @@ export class SidebarScaleControls {
      */
     public getSelectedObjectId(): string | null {
         return this.selectedObjectId;
+    }
+
+    /**
+     * Get the current scale factor
+     */
+    public getCurrentScale(): number {
+        return this.currentScale;
+    }
+
+    /**
+     * Get the current scale as percentage
+     */
+    public getCurrentScalePercent(): number {
+        return this.currentScale * 100;
     }
 
     // ========================================================================

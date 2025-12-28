@@ -106,6 +106,9 @@ export class InputManager {
     /** Whether placement mode is active (disables hover/selection) */
     private placementModeActive = false;
 
+    /** Callback when selection changes - used by App to sync with outliner */
+    private onSelectionChangeCallback: ((piece: TrackPiece | null) => void) | null = null;
+
     // Bound event handlers for cleanup
     private boundMouseMove: (e: PointerEvent) => void;
     private boundMouseDown: (e: PointerEvent) => void;
@@ -350,6 +353,11 @@ export class InputManager {
             // Set global flag so ModelImportButton knows track is selected
             (window as any).__trackPieceSelected = true;
 
+            // Notify callback (used by App to sync with outliner)
+            if (this.onSelectionChangeCallback) {
+                this.onSelectionChangeCallback(piece);
+            }
+
             console.log(`[InputManager] Selected: ${piece.id}`);
         } catch (error) {
             console.error('[InputManager] Error in selectPiece:', error);
@@ -368,6 +376,11 @@ export class InputManager {
 
             // Clear global flag
             (window as any).__trackPieceSelected = false;
+
+            // Notify callback (used by App to sync with outliner)
+            if (this.onSelectionChangeCallback) {
+                this.onSelectionChangeCallback(null);
+            }
         } catch (error) {
             console.error('[InputManager] Error in clearSelection:', error);
         }
@@ -378,6 +391,15 @@ export class InputManager {
      */
     getSelectedPiece(): TrackPiece | null {
         return this.selectedPiece;
+    }
+
+    /**
+     * Set callback for selection changes
+     * Used by App to sync selection with World Outliner
+     * @param callback - Function called with selected piece (or null when deselected)
+     */
+    setOnSelectionChange(callback: (piece: TrackPiece | null) => void): void {
+        this.onSelectionChangeCallback = callback;
     }
 
     /**

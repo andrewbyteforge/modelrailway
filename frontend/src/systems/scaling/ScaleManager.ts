@@ -10,9 +10,13 @@
  * - Provides unified API for scale operations
  * - Tracks scale state and history for undo
  * 
+ * SCALE RANGE: 0.25% to 100%
+ * - MIN_SCALE = 0.0025 (0.25%)
+ * - MAX_SCALE = 1.0 (100%)
+ * 
  * @module ScaleManager
  * @author Model Railway Workbench
- * @version 1.0.0
+ * @version 2.0.0 - Updated scale range to 0.25%-100%
  */
 
 import { Scene } from '@babylonjs/core/scene';
@@ -24,7 +28,12 @@ import type { KeyboardInfo } from '@babylonjs/core/Events/keyboardEvents';
 import { KeyboardEventTypes } from '@babylonjs/core/Events/keyboardEvents';
 
 import { ScaleGizmo } from './ScaleGizmo';
-import { ScaleConstraintsHandler, getGlobalConstraintsHandler } from './ScaleConstraints';
+import {
+    ScaleConstraintsHandler,
+    getGlobalConstraintsHandler,
+    GLOBAL_SCALE_LIMITS,
+    formatScalePercent
+} from './ScaleConstraints';
 import { ScalePresetsManager, getGlobalPresetsManager } from './ScalePresets';
 
 import {
@@ -96,6 +105,8 @@ interface ScaleHistoryEntry {
 /**
  * ScaleManager - Central coordinator for all scaling operations
  * 
+ * Scale range: 0.25% to 100%
+ * 
  * Provides a unified interface for:
  * - Gizmo-based interactive scaling
  * - Hotkey+scroll scaling
@@ -115,7 +126,7 @@ interface ScaleHistoryEntry {
  * scaleManager.selectObject('object_id');
  * 
  * // Or scale programmatically
- * scaleManager.setScale('object_id', 1.5);
+ * scaleManager.setScale('object_id', 0.5); // 50%
  * ```
  */
 export class ScaleManager {
@@ -230,11 +241,12 @@ export class ScaleManager {
     }
 
     /**
-     * Log control instructions
+     * Log control instructions with scale range info
      */
     private logControls(): void {
         console.log('');
         console.log('=== Scale Controls ===');
+        console.log(`  Scale range: ${GLOBAL_SCALE_LIMITS.MIN_PERCENT}% - ${GLOBAL_SCALE_LIMITS.MAX_PERCENT}%`);
         console.log(`  Hold '${this.hotkeyConfig.scaleKey.toUpperCase()}' + Scroll → Scale selected object`);
         console.log(`  + Shift                    → Fine adjustment`);
         console.log(`  '${this.hotkeyConfig.resetKey.toUpperCase()}'                      → Reset to original scale`);
@@ -272,22 +284,25 @@ export class ScaleManager {
         const registered = this.registeredObjects.get(this.state.selectedObjectId);
         if (!registered) return;
 
+        // Clamp preview scale to global limits
+        const clampedScale = this.constraints.clampToGlobalLimits(event.scale);
+
         // Apply preview scale to mesh (visual only)
         this.applyScaleToMeshes(
             registered,
-            event.scale,
+            clampedScale,
             registered.scalable.currentScale
         );
 
         // Update state
-        this.state.previewScale = event.scale;
+        this.state.previewScale = clampedScale;
         this.state.gizmoState = 'preview';
 
         // Emit preview event
         this.emit({
             type: 'scale-preview',
             objectId: this.state.selectedObjectId,
-            scale: event.scale,
+            scale: clampedScale,
             previousScale: registered.scalable.currentScale,
             timestamp: Date.now()
         });
@@ -310,7 +325,7 @@ export class ScaleManager {
         );
 
         if (result.success) {
-            console.log(`${LOG_PREFIX} Gizmo scale committed: ${formatScale(result.finalScale!)}`);
+            console.log(`${LOG_PREFIX} Gizmo scale committed: ${formatScalePercent(result.finalScale!)}`);
         }
 
         // Reset preview state
@@ -438,8 +453,11 @@ export class ScaleManager {
                 this.hotkeyConfig.fineMultiplier
             );
 
+            // Clamp to global limits before applying
+            const clampedScale = this.constraints.clampToGlobalLimits(newScale);
+
             // Apply with constraints
-            this.setScaleInternal(this.state.selectedObjectId, newScale, 'hotkey');
+            this.setScaleInternal(this.state.selectedObjectId, clampedScale, 'hotkey');
         };
 
         canvas.addEventListener('wheel', this.wheelHandler, { passive: false });
@@ -533,7 +551,7 @@ export class ScaleManager {
             registered.scalable.currentScale
         );
 
-        console.log(`${LOG_PREFIX} Selected: ${objectId}`);
+        console.log(`${LOG_PREFIX} Selected: ${objectId} (scale: ${formatScalePercent(registered.scalable.currentScale)})`);
 
         // Emit event
         this.emit({
@@ -575,10 +593,10 @@ export class ScaleManager {
     // ========================================================================
 
     /**
-     * Set scale for an object
+     * Set scale for an object (clamped to 0.25% - 100%)
      * 
      * @param objectId - Object ID
-     * @param scale - New scale factor
+     * @param scale - New scale factor (0.0025 to 1.0)
      * @returns Operation result
      */
     setScale(objectId: string, scale: number): ScaleOperationResult {
@@ -587,6 +605,7 @@ export class ScaleManager {
 
     /**
      * Internal scale setting with source tracking
+     * Enforces global scale limits (0.25% - 100%)
      */
     private setScaleInternal(
         objectId: string,
@@ -603,7 +622,7 @@ export class ScaleManager {
             return { success: false, error: 'Object scale is locked' };
         }
 
-        // Apply constraints
+        // Apply constraints (includes global 0.25% - 100% limits)
         const constrained = this.constraints.applyConstraints(
             scale,
             registered.scalable.category
@@ -836,6 +855,13 @@ export class ScaleManager {
     getCurrentScale(objectId: string): number | null {
         const registered = this.registeredObjects.get(objectId);
         return registered?.scalable.currentScale ?? null;
+    }
+
+    /**
+     * Get global scale limits
+     */
+    getScaleLimits(): { min: number; max: number; minPercent: number; maxPercent: number } {
+        return this.constraints.getGlobalRange();
     }
 
     // ========================================================================
