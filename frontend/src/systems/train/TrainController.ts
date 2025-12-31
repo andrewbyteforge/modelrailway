@@ -1,33 +1,30 @@
 /**
- * TrainController.ts - High-level train control and state management
+ * TrainController.ts - Individual train controller
  * 
  * Path: frontend/src/systems/train/TrainController.ts
  * 
- * Combines physics simulation and path following into a complete
- * train controller:
- * - Manages train model (mesh) reference
- * - Updates position and rotation each frame
- * - Handles selection and highlighting
- * - Provides unified control interface
- * - Coordinates with sound system
- * 
- * Each train on the layout has its own TrainController instance.
+ * Manages a single train:
+ * - Physics simulation (acceleration, braking, momentum)
+ * - Path following along track graph
+ * - Sound effects
+ * - User interaction (selection, hovering)
  * 
  * @module TrainController
  * @author Model Railway Workbench
- * @version 1.0.0
+ * @version 1.1.0 - Fixed mesh collection for varied node types
  */
 
 import { Scene } from '@babylonjs/core/scene';
-import { AbstractMesh } from '@babylonjs/core/Meshes/abstractMesh';
 import { TransformNode } from '@babylonjs/core/Meshes/transformNode';
+import { AbstractMesh } from '@babylonjs/core/Meshes/abstractMesh';
 import { Mesh } from '@babylonjs/core/Meshes/mesh';
-import { Vector3 } from '@babylonjs/core/Maths/math.vector';
-import { Color3 } from '@babylonjs/core/Maths/math.color';
 import { StandardMaterial } from '@babylonjs/core/Materials/standardMaterial';
+import { Color3 } from '@babylonjs/core/Maths/math.color';
+import { Vector3 } from '@babylonjs/core/Maths/math.vector';
 import { Observable } from '@babylonjs/core/Misc/observable';
-import { TrainPhysics, type TrainPhysicsState, type TrainDirection, type BrakeState } from './TrainPhysics';
-import { TrainPathFollower, type TrackPosition, type WorldPose, type MovementResult } from './TrainPathFollower';
+
+import { TrainPhysics, type TrainPhysicsState, type TrainPhysicsConfig } from './TrainPhysics';
+import { TrainPathFollower } from './TrainPathFollower';
 import { TrainSoundManager } from './TrainSoundManager';
 import type { TrackGraph } from '../track/TrackGraph';
 import type { PointsManager } from './PointsManager';
@@ -39,21 +36,21 @@ import type { PointsManager } from './PointsManager';
 /** Logging prefix */
 const LOG_PREFIX = '[TrainController]';
 
-/** Selection glow color */
-const SELECTION_COLOR = new Color3(0.2, 0.8, 0.2); // Green glow
+/** Selection highlight color */
+const SELECTION_COLOR = new Color3(0.2, 0.6, 1.0); // Blue
 
-/** Hover glow color */
-const HOVER_COLOR = new Color3(0.5, 0.5, 1.0); // Blue glow
+/** Hover highlight color */
+const HOVER_COLOR = new Color3(0.8, 0.8, 0.2); // Yellow
 
 // ============================================================================
 // TYPE DEFINITIONS
 // ============================================================================
 
 /**
- * Train identification and metadata
+ * Train identification information
  */
 export interface TrainInfo {
-    /** Unique train ID */
+    /** Unique identifier */
     id: string;
 
     /** Display name */
@@ -62,12 +59,26 @@ export interface TrainInfo {
     /** Category (locomotive, coach, wagon, etc.) */
     category: string;
 
-    /** Model library entry ID (if from library) */
+    /** Optional library entry ID */
     libraryEntryId?: string;
 }
 
 /**
- * Complete train state for UI display
+ * Train controller configuration
+ */
+export interface TrainControllerConfig {
+    /** Enable sound effects */
+    enableSound: boolean;
+
+    /** Y offset for model positioning */
+    modelYOffset: number;
+
+    /** Physics configuration */
+    physicsConfig?: Partial<TrainPhysicsConfig>;
+}
+
+/**
+ * Train state snapshot
  */
 export interface TrainState {
     /** Train info */
@@ -76,57 +87,20 @@ export interface TrainState {
     /** Physics state */
     physics: TrainPhysicsState;
 
-    /** Is this train currently selected for control */
+    /** Is selected for control */
     isSelected: boolean;
 
-    /** Is the train hovering (mouse over) */
+    /** Is mouse hovering */
     isHovered: boolean;
 
-    /** Is the train on track */
+    /** Is on track */
     isOnTrack: boolean;
 
     /** Current edge ID (if on track) */
     currentEdgeId: string | null;
 
-    /** World position */
+    /** Current world position */
     position: Vector3;
-}
-
-/**
- * Configuration options for TrainController
- */
-export interface TrainControllerConfig {
-    /** Physics configuration overrides */
-    physicsConfig?: Partial<import('./TrainPhysics').TrainPhysicsConfig>;
-
-    /** Enable sound effects */
-    enableSound: boolean;
-
-    /** Y offset for model positioning */
-    modelYOffset: number;
-}
-
-/**
- * Events emitted by train controller
- */
-export interface TrainEvents {
-    /** Train was selected */
-    selected: { trainId: string };
-
-    /** Train was deselected */
-    deselected: { trainId: string };
-
-    /** Train reached a dead end */
-    deadEnd: { trainId: string; nodeId: string };
-
-    /** Train started moving */
-    started: { trainId: string };
-
-    /** Train stopped */
-    stopped: { trainId: string };
-
-    /** Horn was sounded */
-    horn: { trainId: string };
 }
 
 // ============================================================================
@@ -136,22 +110,12 @@ export interface TrainEvents {
 /**
  * TrainController - Controls a single train
  * 
- * Manages all aspects of a train's operation:
- * - Physics simulation
- * - Track following
- * - Visual updates
- * - Sound effects
- * - Selection state
+ * Manages physics, path following, and user interaction for one train.
  * 
  * @example
  * ```typescript
- * const controller = new TrainController(
- *     scene, graph, pointsManager,
- *     trainMesh, { id: 'train1', name: 'Class 66', category: 'locomotive' }
- * );
- * controller.placeOnEdge(edgeId);
- * controller.setThrottle(0.5);
- * controller.setDirection('forward');
+ * const controller = new TrainController(scene, graph, points, mesh, info);
+ * controller.placeOnEdge('edge_0', 0.5);
  * 
  * // In render loop:
  * controller.update(deltaTime);
@@ -265,7 +229,7 @@ export class TrainController {
             this.soundManager = new TrainSoundManager(scene);
         }
 
-        // Collect all meshes from the model
+        // Collect all meshes from the model (with robust handling)
         this.collectMeshes();
 
         // Setup materials
@@ -275,28 +239,110 @@ export class TrainController {
         this.setupPickable();
 
         console.log(`${LOG_PREFIX} Created controller for ${info.name} (${info.id})`);
+        console.log(`${LOG_PREFIX}   Collected ${this.meshes.length} meshes`);
     }
+
+    // ========================================================================
+    // MESH COLLECTION
+    // ========================================================================
 
     /**
      * Collect all meshes from the root node
+     * Handles various node types robustly
      */
     private collectMeshes(): void {
-        if (this.rootNode instanceof Mesh) {
+        this.meshes = [];
+
+        // Add root node if it's a mesh
+        if (this.rootNode instanceof AbstractMesh) {
             this.meshes.push(this.rootNode);
         }
 
-        const descendants = this.rootNode.getDescendants(false);
-        for (const node of descendants) {
-            if (node instanceof AbstractMesh) {
-                this.meshes.push(node);
+        // Try different methods to get descendants
+        try {
+            // Method 1: Use getDescendants if available
+            if (typeof this.rootNode.getDescendants === 'function') {
+                const descendants = this.rootNode.getDescendants(false);
+                for (const node of descendants) {
+                    if (node instanceof AbstractMesh) {
+                        this.meshes.push(node);
+                    }
+                }
             }
+            // Method 2: Use getChildMeshes if available (more direct)
+            else if (typeof (this.rootNode as any).getChildMeshes === 'function') {
+                const childMeshes = (this.rootNode as any).getChildMeshes(false);
+                for (const mesh of childMeshes) {
+                    if (mesh instanceof AbstractMesh && !this.meshes.includes(mesh)) {
+                        this.meshes.push(mesh);
+                    }
+                }
+            }
+            // Method 3: Manual traversal using getChildren
+            else if (typeof this.rootNode.getChildren === 'function') {
+                this.traverseAndCollectMeshes(this.rootNode);
+            }
+            // Method 4: Last resort - check _children directly
+            else if ((this.rootNode as any)._children) {
+                this.traverseChildrenArray((this.rootNode as any)._children);
+            }
+        } catch (error) {
+            console.warn(`${LOG_PREFIX} Error collecting meshes:`, error);
+            // If all else fails, at least we have the root if it was a mesh
         }
 
-        // Store original materials
+        // Store original materials for highlight restoration
         for (const mesh of this.meshes) {
             this.originalMaterials.set(mesh, mesh.material);
         }
+
+        // Log warning if no meshes found
+        if (this.meshes.length === 0) {
+            console.warn(`${LOG_PREFIX} No meshes found for ${this.info.name}`);
+            console.warn(`${LOG_PREFIX}   Root node type: ${this.rootNode.constructor.name}`);
+        }
     }
+
+    /**
+     * Recursively traverse and collect meshes using getChildren
+     */
+    private traverseAndCollectMeshes(node: TransformNode): void {
+        try {
+            const children = node.getChildren();
+            for (const child of children) {
+                if (child instanceof AbstractMesh) {
+                    if (!this.meshes.includes(child)) {
+                        this.meshes.push(child);
+                    }
+                }
+                if (child instanceof TransformNode) {
+                    this.traverseAndCollectMeshes(child);
+                }
+            }
+        } catch (error) {
+            // Silently continue if getChildren fails
+        }
+    }
+
+    /**
+     * Traverse a direct children array
+     */
+    private traverseChildrenArray(children: any[]): void {
+        for (const child of children) {
+            if (child instanceof AbstractMesh) {
+                if (!this.meshes.includes(child)) {
+                    this.meshes.push(child);
+                }
+            }
+            if (child && child._children) {
+                this.traverseChildrenArray(child._children);
+            }
+        }
+    }
+
+    // ========================================================================
+    // SETUP
+    // ========================================================================
 
     /**
      * Setup highlight materials
@@ -358,91 +404,10 @@ export class TrainController {
         if (success) {
             this.physics.setDirection('forward');
             this.updateModelTransform();
+            console.log(`${LOG_PREFIX} ${this.info.name} placed at node ${nodeId}`);
         }
 
         return success;
-    }
-
-    // ========================================================================
-    // CONTROL INTERFACE
-    // ========================================================================
-
-    /**
-     * Set throttle position
-     * @param value - 0 to 1
-     */
-    setThrottle(value: number): void {
-        const wasStopped = this.physics.isStopped();
-        this.physics.setThrottle(value);
-
-        // Emit started event if we were stopped and now have throttle
-        if (wasStopped && value > 0 && this.physics.getDirection() !== 'stopped') {
-            this.onStarted.notifyObservers({ trainId: this.info.id });
-        }
-    }
-
-    /**
-     * Increase throttle by step
-     * @param step - Amount to increase (default 0.1)
-     */
-    increaseThrottle(step: number = 0.1): void {
-        this.physics.increaseThrottle(step);
-    }
-
-    /**
-     * Decrease throttle by step
-     * @param step - Amount to decrease (default 0.1)
-     */
-    decreaseThrottle(step: number = 0.1): void {
-        this.physics.decreaseThrottle(step);
-    }
-
-    /**
-     * Set direction of travel
-     * @param dir - 'forward' or 'reverse'
-     * @returns true if direction was set immediately
-     */
-    setDirection(dir: TrainDirection): boolean {
-        return this.physics.setDirection(dir);
-    }
-
-    /**
-     * Toggle direction
-     * @returns true if toggled
-     */
-    toggleDirection(): boolean {
-        return this.physics.toggleDirection();
-    }
-
-    /**
-     * Apply brakes
-     */
-    applyBrake(): void {
-        this.physics.applyBrake();
-    }
-
-    /**
-     * Release brakes
-     */
-    releaseBrake(): void {
-        this.physics.releaseBrake();
-    }
-
-    /**
-     * Emergency brake
-     */
-    emergencyBrake(): void {
-        this.physics.emergencyBrake();
-    }
-
-    /**
-     * Sound the horn
-     * @param duration - Horn duration in seconds (default 0.5)
-     */
-    soundHorn(duration: number = 0.5): void {
-        this.soundManager?.playHorn(duration);
-        this.onHorn.notifyObservers({ trainId: this.info.id });
-        console.log(`${LOG_PREFIX} ${this.info.name}: TOOT!`);
     }
 
     // ========================================================================
@@ -450,61 +415,139 @@ export class TrainController {
     // ========================================================================
 
     /**
-     * Update train state - call every frame
-     * @param deltaTime - Time since last frame in seconds
+     * Update train simulation
+     * @param deltaTime - Time since last update (seconds)
      */
     update(deltaTime: number): void {
-        // Update physics to get distance to move
-        const distance = this.physics.update(deltaTime);
+        // Update physics
+        this.physics.update(deltaTime);
 
-        // Check for stopped event
-        const wasStopped = this.physics.isStopped();
+        // Get current speed
+        const speedMps = this.physics.getCurrentSpeed();
 
-        // Move along track if we have distance to cover
-        if (Math.abs(distance) > 0.00001 && this.pathFollower.isOnTrack()) {
-            const result = this.pathFollower.move(distance);
+        // Move along track if we have speed
+        if (speedMps > 0 && this.pathFollower.isOnTrack()) {
+            const result = this.pathFollower.advance(speedMps * deltaTime);
 
             // Check for dead end
-            if (result.reachedDeadEnd) {
-                console.log(`${LOG_PREFIX} ${this.info.name} reached dead end`);
-                this.physics.emergencyStop();
-
-                const trackPos = this.pathFollower.getTrackPosition();
+            if (result.hitDeadEnd) {
+                this.physics.emergencyBrake();
                 this.onDeadEnd.notifyObservers({
                     trainId: this.info.id,
-                    nodeId: trackPos?.edgeId || 'unknown'
+                    nodeId: result.deadEndNodeId || 'unknown'
                 });
             }
-
-            // Update visual position
-            this.updateModelTransform();
         }
 
-        // Check for stopped event
-        if (!wasStopped && this.physics.isStopped()) {
-            this.onStopped.notifyObservers({ trainId: this.info.id });
-        }
+        // Update model visual position
+        this.updateModelTransform();
 
         // Update sound based on speed
-        if (this.soundManager) {
-            this.soundManager.updateMovementSound(this.physics.getSpeedPercent());
+        this.soundManager?.updateEngineSound(speedMps);
+    }
+
+    /**
+     * Update the model's visual transform from path follower
+     */
+    private updateModelTransform(): void {
+        const pose = this.pathFollower.getWorldPose();
+        if (!pose || !this.rootNode) return;
+
+        // Update position
+        this.rootNode.position.copyFrom(pose.position);
+
+        // Update rotation
+        this.rootNode.rotationQuaternion = pose.rotation;
+    }
+
+    // ========================================================================
+    // CONTROLS
+    // ========================================================================
+
+    /**
+     * Set throttle level
+     * @param level - Throttle 0-1
+     */
+    setThrottle(level: number): void {
+        this.physics.setThrottle(level);
+
+        // Check for start
+        if (level > 0 && this.physics.getCurrentSpeed() === 0) {
+            this.onStarted.notifyObservers({ trainId: this.info.id });
         }
     }
 
     /**
-     * Update model transform from path follower pose
+     * Increase throttle
+     * @param amount - Amount to increase (default 0.1)
      */
-    private updateModelTransform(): void {
-        const pose = this.pathFollower.getWorldPose();
-        if (!pose) return;
+    increaseThrottle(amount: number = 0.1): void {
+        this.physics.increaseThrottle(amount);
+    }
 
-        this.rootNode.position.copyFrom(pose.position);
+    /**
+     * Decrease throttle
+     * @param amount - Amount to decrease (default 0.1)
+     */
+    decreaseThrottle(amount: number = 0.1): void {
+        this.physics.decreaseThrottle(amount);
+    }
 
-        if (this.rootNode.rotationQuaternion) {
-            this.rootNode.rotationQuaternion.copyFrom(pose.rotation);
-        } else {
-            this.rootNode.rotationQuaternion = pose.rotation.clone();
+    /**
+     * Apply brake
+     * @param strength - Brake strength 0-1
+     */
+    brake(strength: number = 1.0): void {
+        this.physics.applyBrake(strength);
+    }
+
+    /**
+     * Release brake
+     */
+    releaseBrake(): void {
+        this.physics.releaseBrake();
+    }
+
+    /**
+     * Emergency brake - immediate stop
+     */
+    emergencyBrake(): void {
+        this.physics.emergencyBrake();
+        this.onStopped.notifyObservers({ trainId: this.info.id });
+    }
+
+    /**
+     * Toggle direction (forward/reverse)
+     */
+    toggleDirection(): void {
+        // Only allow direction change when nearly stopped
+        if (this.physics.canChangeDirection()) {
+            this.physics.toggleDirection();
+            this.pathFollower.reverseDirection();
+            console.log(`${LOG_PREFIX} ${this.info.name} direction: ${this.physics.getDirection()}`);
         }
+    }
+
+    /**
+     * Set direction
+     * @param direction - 'forward' or 'reverse'
+     */
+    setDirection(direction: 'forward' | 'reverse'): void {
+        if (this.physics.canChangeDirection()) {
+            const current = this.physics.getDirection();
+            if (current !== direction) {
+                this.physics.setDirection(direction);
+                this.pathFollower.reverseDirection();
+            }
+        }
+    }
+
+    /**
+     * Sound horn
+     */
+    soundHorn(): void {
+        this.soundManager?.soundHorn();
+        this.onHorn.notifyObservers({ trainId: this.info.id });
     }
 
     // ========================================================================
@@ -520,8 +563,7 @@ export class TrainController {
         this.isSelected = true;
         this.applySelectionHighlight();
         this.onSelected.notifyObservers({ trainId: this.info.id });
-
-        console.log(`${LOG_PREFIX} ${this.info.name} selected`);
+        console.log(`${LOG_PREFIX} Selected: ${this.info.name}`);
     }
 
     /**
@@ -533,85 +575,64 @@ export class TrainController {
         this.isSelected = false;
         this.removeHighlight();
         this.onDeselected.notifyObservers({ trainId: this.info.id });
-
-        console.log(`${LOG_PREFIX} ${this.info.name} deselected`);
-    }
-
-    /**
-     * Toggle selection state
-     */
-    toggleSelection(): void {
-        if (this.isSelected) {
-            this.deselect();
-        } else {
-            this.select();
-        }
+        console.log(`${LOG_PREFIX} Deselected: ${this.info.name}`);
     }
 
     /**
      * Set hover state
-     * @param hovering - Is mouse hovering
+     * @param hovering - Whether mouse is hovering
      */
-    setHovered(hovering: boolean): void {
+    setHover(hovering: boolean): void {
         if (this.isHovered === hovering) return;
 
         this.isHovered = hovering;
 
-        if (hovering && !this.isSelected) {
-            this.applyHoverHighlight();
-        } else if (!hovering && !this.isSelected) {
-            this.removeHighlight();
-        }
-    }
-
-    /**
-     * Apply selection highlight to meshes
-     */
-    private applySelectionHighlight(): void {
-        // For now, simple emissive boost
-        for (const mesh of this.meshes) {
-            const material = mesh.material as StandardMaterial;
-            if (material && 'emissiveColor' in material) {
-                material.emissiveColor = SELECTION_COLOR;
+        // Only apply hover highlight if not selected
+        if (!this.isSelected) {
+            if (hovering) {
+                this.applyHoverHighlight();
+            } else {
+                this.removeHighlight();
             }
         }
     }
 
     /**
-     * Apply hover highlight to meshes
+     * Apply selection highlight
+     */
+    private applySelectionHighlight(): void {
+        for (const mesh of this.meshes) {
+            if (mesh.material && 'emissiveColor' in mesh.material) {
+                (mesh.material as any).emissiveColor = SELECTION_COLOR;
+            }
+        }
+    }
+
+    /**
+     * Apply hover highlight
      */
     private applyHoverHighlight(): void {
         for (const mesh of this.meshes) {
-            const material = mesh.material as StandardMaterial;
-            if (material && 'emissiveColor' in material) {
-                material.emissiveColor = HOVER_COLOR;
+            if (mesh.material && 'emissiveColor' in mesh.material) {
+                (mesh.material as any).emissiveColor = HOVER_COLOR;
             }
         }
     }
 
     /**
-     * Remove all highlighting
+     * Remove highlight
      */
     private removeHighlight(): void {
         for (const mesh of this.meshes) {
-            const material = mesh.material as StandardMaterial;
-            if (material && 'emissiveColor' in material) {
-                material.emissiveColor = Color3.Black();
+            if (mesh.material && 'emissiveColor' in mesh.material) {
+                (mesh.material as any).emissiveColor = Color3.Black();
             }
         }
     }
 
     // ========================================================================
-    // STATE QUERIES
+    // GETTERS
     // ========================================================================
-
-    /**
-     * Get train ID
-     * @returns Train ID
-     */
-    getId(): string {
-        return this.info.id;
-    }
 
     /**
      * Get train info
@@ -622,15 +643,7 @@ export class TrainController {
     }
 
     /**
-     * Check if train is selected
-     * @returns true if selected
-     */
-    getIsSelected(): boolean {
-        return this.isSelected;
-    }
-
-    /**
-     * Get complete train state
+     * Get train state snapshot
      * @returns Current state
      */
     getState(): TrainState {

@@ -1,21 +1,18 @@
 ﻿/**
- * TrainSystem.ts - Main coordination system for all train operations
+ * TrainSystem.ts - Central manager for all train operations
  * 
  * Path: frontend/src/systems/train/TrainSystem.ts
  * 
- * High-level system that manages:
- * - All trains in the layout
- * - Train selection and control delegation
- * - Points/switch management
- * - Input handling for train control
- * - UI integration for control panels
- * - Update loop coordination
+ * Coordinates multiple trains, handles input, manages selection,
+ * and integrates with track and UI systems.
  * 
- * This is the main entry point for train functionality.
+ * UPDATED: Train selection now differentiates between:
+ *   - Click = Select for DRIVING (keyboard controls active)
+ *   - Shift+Click = Allow REPOSITIONING (handled by ModelImportButton)
  * 
  * @module TrainSystem
  * @author Model Railway Workbench
- * @version 1.0.0
+ * @version 1.1.0 - Added train selection mode differentiation
  */
 
 import { Scene } from '@babylonjs/core/scene';
@@ -272,16 +269,22 @@ export class TrainSystem {
      */
     private logControlsHelp(): void {
         console.log('');
-        console.log('=== Train Controls ===');
-        console.log('  Click train → Select for control');
-        console.log('  ↑/W → Increase throttle');
-        console.log('  ↓/S → Decrease throttle');
-        console.log('  R → Toggle direction (forward/reverse)');
-        console.log('  Space → Apply brake');
-        console.log('  H → Sound horn');
-        console.log('  Click points → Toggle switch direction');
-        console.log('  Escape → Deselect / Emergency brake');
-        console.log('====================');
+        console.log('╔════════════════════════════════════════════════════════════╗');
+        console.log('║                    TRAIN CONTROLS                          ║');
+        console.log('╠════════════════════════════════════════════════════════════╣');
+        console.log('║  Click train      → Select for DRIVING                     ║');
+        console.log('║  Shift+Click      → Select for REPOSITIONING               ║');
+        console.log('╠════════════════════════════════════════════════════════════╣');
+        console.log('║  When driving (train selected):                            ║');
+        console.log('║    ↑ / W          → Increase throttle                      ║');
+        console.log('║    ↓ / S          → Decrease throttle                      ║');
+        console.log('║    R              → Toggle direction (forward/reverse)     ║');
+        console.log('║    Space          → Apply brake (hold)                     ║');
+        console.log('║    H              → Sound horn                             ║');
+        console.log('║    Escape         → Deselect / Emergency brake             ║');
+        console.log('╠════════════════════════════════════════════════════════════╣');
+        console.log('║  Click points     → Toggle switch direction                ║');
+        console.log('╚════════════════════════════════════════════════════════════╝');
         console.log('');
     }
 
@@ -303,17 +306,20 @@ export class TrainSystem {
     ): TrainController {
         // Generate ID if not provided
         const trainId = info.id || `train_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-        const fullInfo: TrainInfo = {
-            ...info,
-            id: trainId,
-            category: info.category || 'locomotive'
-        };
 
-        // Check for duplicate ID
+        // Check for duplicate
         if (this.trains.has(trainId)) {
-            console.warn(`${LOG_PREFIX} Train with ID ${trainId} already exists`);
+            console.warn(`${LOG_PREFIX} Train ${trainId} already exists, returning existing`);
             return this.trains.get(trainId)!;
         }
+
+        // Create full info
+        const fullInfo: TrainInfo = {
+            id: trainId,
+            name: info.name,
+            category: info.category,
+            libraryEntryId: info.libraryEntryId
+        };
 
         // Create controller
         const controller = new TrainController(
@@ -328,16 +334,30 @@ export class TrainSystem {
             }
         );
 
-        // Register train
+        // Subscribe to controller events
+        controller.onSelected.add(() => {
+            this.handleTrainSelected(controller);
+        });
+
+        controller.onDeselected.add(() => {
+            this.handleTrainDeselected(controller);
+        });
+
+        // Store controller
         this.trains.set(trainId, controller);
 
-        // Setup controller event listeners
-        this.setupControllerListeners(controller);
+        // Mark root node as train root for detection
+        (rootNode as any).__isTrainRoot = true;
+        (rootNode as any).__trainId = trainId;
+        if (!rootNode.metadata) rootNode.metadata = {};
+        rootNode.metadata.isTrainRoot = true;
+        rootNode.metadata.trainId = trainId;
 
         // Notify observers
         this.onTrainAdded.notifyObservers(controller);
 
         console.log(`${LOG_PREFIX} Added train: ${fullInfo.name} (${trainId})`);
+
         return controller;
     }
 
@@ -361,13 +381,14 @@ export class TrainSystem {
         // Dispose controller
         controller.dispose();
 
-        // Remove from registry
+        // Remove from map
         this.trains.delete(trainId);
 
         // Notify observers
         this.onTrainRemoved.notifyObservers(trainId);
 
         console.log(`${LOG_PREFIX} Removed train: ${trainId}`);
+
         return true;
     }
 
@@ -382,166 +403,69 @@ export class TrainSystem {
 
     /**
      * Get all train controllers
-     * @returns Array of controllers
+     * @returns Array of all controllers
      */
     getAllTrains(): TrainController[] {
         return Array.from(this.trains.values());
     }
 
     /**
-     * Get all train states
-     * @returns Array of train states
+     * Get count of registered trains
+     * @returns Number of trains
      */
-    getAllTrainStates(): TrainState[] {
-        return this.getAllTrains().map(t => t.getState());
+    getTrainCount(): number {
+        return this.trains.size;
     }
 
-    /**
-     * Setup event listeners for a controller
-     * @param controller - The controller
-     */
-    private setupControllerListeners(controller: TrainController): void {
-        // Listen for selection events
-        controller.onSelected.add(() => {
-            // Deselect previous train
-            if (this.selectedTrain && this.selectedTrain !== controller) {
-                this.selectedTrain.deselect();
-            }
-            this.selectedTrain = controller;
-            this.onSelectionChanged.notifyObservers(controller);
-        });
-
-        controller.onDeselected.add(() => {
-            if (this.selectedTrain === controller) {
-                this.selectedTrain = null;
-                this.onSelectionChanged.notifyObservers(null);
-            }
-        });
-    }
+    // ========================================================================
+    // AUTOMATIC TRAIN DETECTION
+    // ========================================================================
 
     /**
-     * Register an existing model as a train
-     * Use this for models that were imported before TrainSystem was ready,
-     * or for models imported through other means.
+     * Scan scene for models that look like trains and register them
+     * Uses keywords in mesh names to identify potential trains
      * 
-     * @param rootNode - Root transform node of the model
-     * @param name - Train name
-     * @param edgeId - Optional edge to place on (if on track)
-     * @param t - Optional parametric position on edge
-     * @returns The created TrainController
-     * 
-     * @example
-     * ```typescript
-     * // Register an existing model
-     * const controller = trainSystem.registerExistingModel(
-     *     existingModelNode,
-     *     'My Locomotive',
-     *     'edge_123',  // optional
-     *     0.5          // optional
-     * );
-     * ```
-     */
-    registerExistingModel(
-        rootNode: TransformNode,
-        name: string,
-        edgeId?: string,
-        t?: number
-    ): TrainController {
-        // Add as train
-        const controller = this.addTrain(rootNode, {
-            name: name,
-            category: 'locomotive'
-        });
-
-        // Place on edge if provided
-        if (edgeId) {
-            controller.placeOnEdge(edgeId, t ?? 0.5, 1);
-        }
-
-        console.log(`${LOG_PREFIX} Registered existing model "${name}" as train`);
-        return controller;
-    }
-
-    /**
-     * Debug helper - list all registered trains
-     */
-    debugListTrains(): void {
-        console.log(`${LOG_PREFIX} === Registered Trains ===`);
-        if (this.trains.size === 0) {
-            console.log(`${LOG_PREFIX}   (no trains registered)`);
-            console.log(`${LOG_PREFIX}   Tip: Use trainSystem.addTrain() or trainSystem.registerExistingModel()`);
-        } else {
-            for (const [id, train] of this.trains) {
-                const info = train.getInfo();
-                const state = train.getState();
-                console.log(`${LOG_PREFIX}   - ${info.name} (${id})`);
-                console.log(`${LOG_PREFIX}     Selected: ${state.isSelected}, OnTrack: ${state.isOnTrack}`);
-            }
-        }
-        console.log(`${LOG_PREFIX} =========================`);
-    }
-
-    /**
-     * Scan scene for meshes that might be trains and register them
-     * This is a helper for registering models that were imported before
-     * the train system was connected.
-     * 
-     * Looks for root meshes/transform nodes with names containing train-related keywords.
-     * 
-     * @param keywords - Keywords to look for in mesh names (default: train-related words)
      * @returns Number of trains registered
      */
-    scanAndRegisterTrains(keywords?: string[]): number {
-        const searchTerms = keywords || [
-            'train', 'loco', 'locomotive', 'engine', 'diesel', 'steam', 'electric',
-            'coach', 'carriage', 'wagon', 'freight', 'tanker', 'hopper', 'boxcar',
-            'class', 'hst', 'dmu', 'emu', 'shunter'
-        ];
+    scanAndRegisterTrains(): number {
+        console.log(`${LOG_PREFIX} Scanning for trains...`);
 
-        console.log(`${LOG_PREFIX} Scanning scene for train models...`);
+        const keywords = ['train', 'loco', 'engine', 'coach', 'wagon', 'carriage', 'diesel', 'steam', 'class'];
+        let registered = 0;
 
-        // Create edge finder for track detection
+        // Create edge finder
         const edgeFinder = new TrackEdgeFinder(this.graph);
 
-        let registered = 0;
-        const rootNodes = this.scene.rootNodes;
+        // Check all root nodes
+        for (const node of this.scene.rootNodes) {
+            if (node instanceof TransformNode) {
+                // Check if already registered
+                if ((node as any).__trainController) continue;
 
-        for (const node of rootNodes) {
-            // Skip non-TransformNodes
-            if (!(node instanceof TransformNode)) continue;
+                // Check name for keywords
+                const name = node.name.toLowerCase();
+                const isLikelyTrain = keywords.some(kw => name.includes(kw));
 
-            // Skip if already registered
-            let alreadyRegistered = false;
-            for (const train of this.trains.values()) {
-                if (train.getRootNode() === node) {
-                    alreadyRegistered = true;
-                    break;
-                }
-            }
-            if (alreadyRegistered) continue;
+                if (isLikelyTrain) {
+                    // Check if on track
+                    const position = node.getAbsolutePosition ?
+                        node.getAbsolutePosition() : node.position;
 
-            // Check if name matches any keyword
-            const nodeName = node.name.toLowerCase();
-            const isMatch = searchTerms.some(term => nodeName.includes(term.toLowerCase()));
+                    const edgeResult = edgeFinder.findNearestEdge(position, { maxDistance: 0.1 });
 
-            if (isMatch) {
-                // Try to find an edge near this model
-                const position = node.getAbsolutePosition ? node.getAbsolutePosition() : node.position;
+                    if (edgeResult) {
+                        const controller = this.addTrain(node, {
+                            name: node.name || `Train ${registered + 1}`,
+                            category: 'locomotive'
+                        });
 
-                const edgeResult = edgeFinder.findNearestEdge(position, { maxDistance: 0.1 });
+                        controller.placeOnEdge(edgeResult.edge.id, edgeResult.t, 1);
+                        registered++;
 
-                if (edgeResult) {
-                    const controller = this.addTrain(node, {
-                        name: node.name || `Train ${registered + 1}`,
-                        category: 'locomotive'
-                    });
-
-                    controller.placeOnEdge(edgeResult.edge.id, edgeResult.t, 1);
-                    registered++;
-
-                    console.log(`${LOG_PREFIX}   ✓ Registered: ${node.name}`);
-                } else {
-                    console.log(`${LOG_PREFIX}   ⚠ Found "${node.name}" but not on track`);
+                        console.log(`${LOG_PREFIX}   ✓ Registered: ${node.name}`);
+                    } else {
+                        console.log(`${LOG_PREFIX}   ⚠ Found "${node.name}" but not on track`);
+                    }
                 }
             }
         }
@@ -582,6 +506,13 @@ export class TrainSystem {
         if (this.selectedTrain) {
             this.selectedTrain.deselect();
             this.selectedTrain = null;
+
+            // Clear window flags
+            (window as any).__trainSelected = false;
+            (window as any).__selectedTrainId = null;
+
+            // Notify observers
+            this.onSelectionChanged.notifyObservers(null);
         }
     }
 
@@ -599,6 +530,80 @@ export class TrainSystem {
      */
     hasSelectedTrain(): boolean {
         return this.selectedTrain !== null;
+    }
+
+    /**
+     * Handle train selected event
+     */
+    private handleTrainSelected(controller: TrainController): void {
+        // Deselect previous
+        if (this.selectedTrain && this.selectedTrain !== controller) {
+            this.selectedTrain.deselect();
+        }
+
+        this.selectedTrain = controller;
+
+        // Set window flags for other systems to check
+        (window as any).__trainSelected = true;
+        (window as any).__selectedTrainId = controller.getId();
+
+        // Notify observers
+        this.onSelectionChanged.notifyObservers(controller);
+    }
+
+    /**
+     * Handle train deselected event
+     */
+    private handleTrainDeselected(controller: TrainController): void {
+        if (this.selectedTrain === controller) {
+            this.selectedTrain = null;
+
+            // Clear window flags
+            (window as any).__trainSelected = false;
+            (window as any).__selectedTrainId = null;
+
+            // Notify observers
+            this.onSelectionChanged.notifyObservers(null);
+        }
+    }
+
+    // ========================================================================
+    // PUBLIC TRAIN LOOKUP (for external systems)
+    // ========================================================================
+
+    /**
+     * Public method to find a train controller from a mesh
+     * 
+     * Used by external systems (like ModelImportButton) to check
+     * if a clicked mesh belongs to a registered train. This allows
+     * other click handlers to defer to TrainSystem when appropriate.
+     * 
+     * @param mesh - Mesh to check
+     * @returns TrainController if found, null otherwise
+     * 
+     * @example
+     * ```typescript
+     * // In ModelImportButton or other click handler:
+     * const trainController = trainSystem.findTrainByMesh(clickedMesh);
+     * if (trainController) {
+     *     // This is a train - let TrainSystem handle it
+     *     return;
+     * }
+     * ```
+     */
+    findTrainByMesh(mesh: AbstractMesh): TrainController | null {
+        return this.findTrainFromMesh(mesh);
+    }
+
+    /**
+     * Check if a mesh belongs to any registered train
+     * Simpler boolean version of findTrainByMesh
+     * 
+     * @param mesh - Mesh to check
+     * @returns true if mesh is part of a train
+     */
+    isTrainMesh(mesh: AbstractMesh): boolean {
+        return this.findTrainFromMesh(mesh) !== null;
     }
 
     // ========================================================================
@@ -732,6 +737,11 @@ export class TrainSystem {
 
     /**
      * Handle pointer down events
+     * 
+     * UPDATED: Now checks for Shift key to differentiate between:
+     *   - Regular click = Select for DRIVING
+     *   - Shift+Click = Allow REPOSITIONING (defer to ModelImportButton)
+     * 
      * @param pointerInfo - Pointer event info
      */
     private handlePointerDown(pointerInfo: any): void {
@@ -739,19 +749,65 @@ export class TrainSystem {
         if (!pickResult?.hit || !pickResult.pickedMesh) return;
 
         const mesh = pickResult.pickedMesh;
+        const event = pointerInfo.event as PointerEvent;
 
+        // ----------------------------------------------------------------
         // Check if clicked on a train
+        // ----------------------------------------------------------------
         const trainController = this.findTrainFromMesh(mesh);
         if (trainController) {
+            // Check for Shift key - if held, allow repositioning instead of driving
+            if (event?.shiftKey) {
+                console.log(`${LOG_PREFIX} Shift+Click on train "${trainController.getInfo().name}" - deferring to reposition mode`);
+                // Don't select - let ModelImportButton handle it for repositioning
+                return;
+            }
+
+            // Regular click - select train for DRIVING
+            console.log(`${LOG_PREFIX} Selecting train "${trainController.getInfo().name}" for driving`);
             trainController.select();
+
+            // The selection handler will update selectedTrain and notify observers
+
+            // Mark event as handled to prevent other systems from processing
+            // Set a flag that other systems can check
+            (window as any).__trainSelected = true;
+            (window as any).__selectedTrainId = trainController.getId();
+
+            // Clear the flag after a short delay (for async handlers that run after us)
+            setTimeout(() => {
+                // Only clear if still the same train (prevents race condition)
+                if ((window as any).__selectedTrainId === trainController.getId()) {
+                    // Keep __trainSelected true while train is selected
+                    // It will be cleared when train is deselected
+                }
+            }, 100);
+
             return;
         }
 
+        // ----------------------------------------------------------------
         // Check if clicked on a point/switch
+        // ----------------------------------------------------------------
         const pieceId = this.findTrackPieceFromMesh(mesh);
         if (pieceId && this.pointsManager.isPoint(pieceId)) {
             this.pointsManager.togglePoint(pieceId, true);
             return;
+        }
+
+        // ----------------------------------------------------------------
+        // Clicked elsewhere - deselect current train (if on baseboard)
+        // ----------------------------------------------------------------
+        const meshName = mesh.name.toLowerCase();
+        if (meshName.includes('baseboard') ||
+            meshName.includes('board') ||
+            meshName.includes('ground') ||
+            meshName.includes('table')) {
+
+            if (this.selectedTrain) {
+                console.log(`${LOG_PREFIX} Clicked away - deselecting train`);
+                this.deselectTrain();
+            }
         }
     }
 
@@ -771,23 +827,26 @@ export class TrainSystem {
 
         const mesh = pickResult.pickedMesh;
 
-        // Debug logging (remove once working)
-        // console.log(`${LOG_PREFIX} Hover over mesh: ${mesh.name}`);
-
         // Check if hovering over a train
         const trainController = this.findTrainFromMesh(mesh);
         if (trainController) {
             trainController.setHovered(true);
             // Change cursor to pointer
-            this.scene.getEngine().getRenderingCanvas()!.style.cursor = 'pointer';
+            const canvas = this.scene.getEngine().getRenderingCanvas();
+            if (canvas) {
+                canvas.style.cursor = 'pointer';
+            }
         } else {
             // Reset cursor
-            this.scene.getEngine().getRenderingCanvas()!.style.cursor = 'default';
+            const canvas = this.scene.getEngine().getRenderingCanvas();
+            if (canvas) {
+                canvas.style.cursor = 'default';
+            }
         }
     }
 
     /**
-     * Find train controller from a mesh
+     * Find train controller from a mesh (private implementation)
      * @param mesh - Mesh that was picked
      * @returns Controller or null
      */
@@ -797,11 +856,31 @@ export class TrainSystem {
             return (mesh as any).__trainController;
         }
 
+        // Check mesh metadata
+        if (mesh.metadata?.trainId) {
+            const controller = this.trains.get(mesh.metadata.trainId);
+            if (controller) return controller;
+        }
+
         // Check all trains
         for (const train of this.trains.values()) {
             if (train.containsMesh(mesh)) {
                 return train;
             }
+        }
+
+        // Check parent hierarchy for train markers
+        let parent = mesh.parent;
+        while (parent) {
+            if ((parent as any).__trainId) {
+                const controller = this.trains.get((parent as any).__trainId);
+                if (controller) return controller;
+            }
+            if (parent.metadata?.trainId) {
+                const controller = this.trains.get(parent.metadata.trainId);
+                if (controller) return controller;
+            }
+            parent = parent.parent;
         }
 
         return null;
@@ -840,29 +919,16 @@ export class TrainSystem {
 
     /**
      * Toggle a point's state
-     * @param pieceId - ID of the switch piece
-     * @returns New state or null
+     * @param pieceId - ID of the point piece
+     * @returns New state or undefined if not a point
      */
-    togglePoint(pieceId: string): PointState | null {
-        return this.pointsManager.togglePoint(pieceId, true);
-    }
+    togglePoint(pieceId: string): PointState | undefined {
+        if (!this.pointsManager.isPoint(pieceId)) {
+            return undefined;
+        }
 
-    /**
-     * Set a point's state
-     * @param pieceId - ID of the switch piece
-     * @param state - Desired state
-     * @returns true if state was changed
-     */
-    setPointState(pieceId: string, state: PointState): boolean {
-        return this.pointsManager.setPointState(pieceId, state, true);
-    }
-
-    /**
-     * Get all points data
-     * @returns Array of point data
-     */
-    getAllPoints(): PointData[] {
-        return this.pointsManager.getAllPoints();
+        this.pointsManager.togglePoint(pieceId, true);
+        return this.pointsManager.getPointState(pieceId);
     }
 
     // ========================================================================
@@ -870,33 +936,42 @@ export class TrainSystem {
     // ========================================================================
 
     /**
-     * Update all trains - call every frame
-     * @param deltaTime - Time since last frame in seconds
+     * Update all trains
+     * Call this from the render loop
+     * 
+     * @param deltaTime - Time since last update in seconds
      */
     update(deltaTime: number): void {
-        // Update all trains
+        // Update all train controllers
         for (const train of this.trains.values()) {
             train.update(deltaTime);
         }
     }
 
     // ========================================================================
-    // CLEANUP
+    // DISPOSAL
     // ========================================================================
 
     /**
-     * Dispose of train system and all resources
+     * Clean up resources
      */
     dispose(): void {
-        // Remove input handlers
+        console.log(`${LOG_PREFIX} Disposing...`);
+
+        // Remove keyboard handlers
         if (this.keydownHandler) {
             window.removeEventListener('keydown', this.keydownHandler);
+            this.keydownHandler = null;
         }
         if (this.keyupHandler) {
             window.removeEventListener('keyup', this.keyupHandler);
+            this.keyupHandler = null;
         }
+
+        // Remove pointer observer
         if (this.pointerObserver) {
             this.scene.onPointerObservable.remove(this.pointerObserver);
+            this.pointerObserver = null;
         }
 
         // Dispose all trains
@@ -905,11 +980,10 @@ export class TrainSystem {
         }
         this.trains.clear();
 
-        // Dispose points manager
-        this.pointsManager.dispose();
-
-        // Dispose sound manager
-        this.globalSoundManager.dispose();
+        // Clear selection
+        this.selectedTrain = null;
+        (window as any).__trainSelected = false;
+        (window as any).__selectedTrainId = null;
 
         // Clear observables
         this.onTrainAdded.clear();
@@ -917,9 +991,11 @@ export class TrainSystem {
         this.onSelectionChanged.clear();
         this.onPointChanged.clear();
 
-        this.selectedTrain = null;
+        // Dispose points manager
+        this.pointsManager.dispose();
+
         this.isInitialized = false;
 
-        console.log(`${LOG_PREFIX} Disposed`);
+        console.log(`${LOG_PREFIX} ✓ Disposed`);
     }
 }

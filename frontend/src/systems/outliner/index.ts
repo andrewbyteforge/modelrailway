@@ -1,51 +1,66 @@
 /**
- * Outliner System - Index file
+ * index.ts - Outliner Module Exports
  * 
  * Path: frontend/src/systems/outliner/index.ts
  * 
- * Re-exports all outliner system components for convenient importing.
+ * Re-exports all outliner classes for convenient importing.
  * 
- * @module OutlinerSystem
+ * @module Outliner
+ * 
+ * @example
+ * ```typescript
+ * // Import the main WorldOutliner class
+ * import { WorldOutliner } from './systems/outliner';
+ * 
+ * // Or import specific components
+ * import { 
+ *     WorldOutlinerCore, 
+ *     NodeOperations, 
+ *     StateManager 
+ * } from './systems/outliner';
+ * ```
  */
 
-// Core classes
-export { OutlinerNode, generateNodeId, createIdentityTransform } from './OutlinerNode';
+// ============================================================================
+// MAIN OUTLINER CLASS
+// ============================================================================
+
+/**
+ * Main WorldOutliner class - use this for complete outliner functionality
+ */
 export { WorldOutliner } from './WorldOutliner';
-export {
-    OutlinerEventEmitter,
-    getSharedOutlinerEvents,
-    resetSharedOutlinerEvents
-} from './OutlinerEvents';
+export type { OnNodeDeleteCallback } from './WorldOutlinerCore';
 
-// Re-export types
-export type {
-    OutlinerNodeType,
-    DefaultCategory,
-    OutlinerNodeData,
-    OutlinerTransform,
-    OutlinerState,
-    OutlinerEventType,
-    OutlinerEvent,
-    OutlinerEventListener,
-    OutlinerUIConfig,
-    NodeCreatedEvent,
-    NodeDeletedEvent,
-    NodeRenamedEvent,
-    NodeMovedEvent,
-    NodeVisibilityChangedEvent,
-    NodeLockChangedEvent,
-    NodeExpandedChangedEvent,
-    NodeSelectedEvent,
-    NodeDeselectedEvent,
-    SelectionChangedEvent,
-    NodeDuplicatedEvent,
-    HierarchyChangedEvent,
-} from '../../types/outliner.types';
+// ============================================================================
+// COMPONENT CLASSES
+// ============================================================================
 
-// Re-export constants
-export {
-    NODE_TYPE_TO_CATEGORY,
-    NODE_TYPE_ICONS,
-    CATEGORY_ICONS,
-    DEFAULT_OUTLINER_UI_CONFIG,
-} from '../../types/outliner.types';
+/**
+ * Core infrastructure - initialization, scene utilities, statistics
+ * Can be extended for custom implementations
+ */
+export { WorldOutlinerCore, SCHEMA_VERSION, DEFAULT_CATEGORIES } from './WorldOutlinerCore';
+
+/**
+ * Node CRUD operations - create, delete, retrieve, modify, duplicate
+ */
+export { NodeOperations } from './NodeOperations';
+
+/**
+ * State management - selection, visibility, lock, expand/collapse, transforms, serialization
+ */
+export { StateManager } from './StateManager';
+
+// ============================================================================
+// EXISTING EXPORTS (unchanged from original structure)
+// ============================================================================
+
+/**
+ * OutlinerNode - Individual node class
+ */
+export { OutlinerNode, generateNodeId } from './OutlinerNode';
+
+/**
+ * OutlinerEventEmitter - Event handling
+ */
+export { OutlinerEventEmitter } from './OutlinerEvents';

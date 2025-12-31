@@ -10,9 +10,12 @@
  * - Scale application and adjustment
  * - Integration with ModelLibrary
  * 
+ * v1.2.0 - Refactored to use centralized constants
+ * v1.1.0 - Added metadata.originalName for train keyword detection
+ * 
  * @module ModelSystem
  * @author Model Railway Workbench
- * @version 1.0.0
+ * @version 1.2.0
  */
 
 import { Scene } from '@babylonjs/core/scene';
@@ -29,6 +32,19 @@ import '@babylonjs/loaders/glTF';
 import { ModelLibrary, type ModelLibraryEntry, type ModelScalePreset } from './ModelLibrary';
 import { ModelScaleHelper, type ModelDimensions, type ScaleResult } from './ModelScaleHelper';
 import type { Project } from '../../core/Project';
+
+// ============================================================================
+// IMPORTS FROM CENTRALIZED CONSTANTS
+// ============================================================================
+
+import { TRACK_GEOMETRY } from '../../constants';
+
+// ============================================================================
+// RE-EXPORTS FOR BACKWARDS COMPATIBILITY
+// ============================================================================
+
+// Re-export TRACK_GEOMETRY so existing imports continue to work
+export { TRACK_GEOMETRY };
 
 // ============================================================================
 // CONSTANTS
@@ -99,31 +115,6 @@ export interface PlacementOptions {
     /** Snap Y position to rail top height (for rolling stock) */
     snapToRails?: boolean;
 }
-
-// ============================================================================
-// TRACK GEOMETRY CONSTANTS (for rolling stock placement)
-// ============================================================================
-
-/**
- * Track geometry constants for OO gauge
- * Used to calculate correct Y position for rolling stock
- */
-export const TRACK_GEOMETRY = {
-    /** Baseboard surface height */
-    BASEBOARD_TOP: 0.950,
-    /** Ballast height above baseboard (3mm) */
-    BALLAST_HEIGHT: 0.003,
-    /** Sleeper height above ballast (2mm) */
-    SLEEPER_HEIGHT: 0.002,
-    /** Rail height above sleepers (3mm) */
-    RAIL_HEIGHT: 0.003,
-    /** Total height from baseboard to rail top surface (8mm) */
-    RAIL_TOP_OFFSET: 0.008,
-    /** Absolute Y coordinate of rail top surface */
-    get RAIL_TOP_Y(): number {
-        return this.BASEBOARD_TOP + this.RAIL_TOP_OFFSET;
-    }
-} as const;
 
 // ============================================================================
 // MODEL SYSTEM CLASS
@@ -209,6 +200,7 @@ export class ModelSystem {
 
             console.log(`${LOG_PREFIX} Initialized`);
             console.log(`${LOG_PREFIX}   Highlight layer created`);
+            console.log(`${LOG_PREFIX}   Rail top Y: ${TRACK_GEOMETRY.RAIL_TOP_Y.toFixed(4)}m`);
 
         } catch (error) {
             console.error(`${LOG_PREFIX} Initialization error:`, error);
@@ -254,6 +246,21 @@ export class ModelSystem {
 
             // Create root transform node
             const rootNode = new TransformNode(`model_root_${Date.now()}`, this.scene);
+
+            // ================================================================
+            // CRITICAL FIX: Store original filename for train keyword detection
+            // ================================================================
+            // TrainIntegration.ts checks metadata.originalName to find keywords
+            // like "Locom", "Coach", "Wagon" in the original filename.
+            // Without this, GLB internal mesh names (__root__, node0) have no keywords!
+            // ================================================================
+            rootNode.metadata = {
+                originalName: fileName,  // Contains keywords like "Locom", "Coach", etc.
+                modelType: 'imported',
+                category: 'unknown'
+            };
+            console.log(`${LOG_PREFIX}   Stored metadata.originalName: "${fileName}"`);
+            // ================================================================
 
             // Parent all meshes to root node
             for (const mesh of result.meshes) {
@@ -317,6 +324,13 @@ export class ModelSystem {
                     clonedRoot.getChildMeshes().forEach(mesh => {
                         clonedMeshes.push(mesh);
                     });
+
+                    // ================================================================
+                    // Also copy metadata to cloned root for train detection
+                    // ================================================================
+                    if (cached.rootNode.metadata) {
+                        clonedRoot.metadata = { ...cached.rootNode.metadata };
+                    }
                 }
 
                 return {
@@ -366,6 +380,20 @@ export class ModelSystem {
             // Generate instance ID
             const instanceId = `placed_${libraryEntry.id}_${this.nextInstanceId++}`;
 
+            // ================================================================
+            // Ensure metadata is set on the root node for train detection
+            // ================================================================
+            if (!loadResult.rootNode.metadata || !loadResult.rootNode.metadata.originalName) {
+                loadResult.rootNode.metadata = {
+                    ...loadResult.rootNode.metadata,
+                    originalName: libraryEntry.name,
+                    modelType: 'placed',
+                    category: libraryEntry.category || 'unknown'
+                };
+                console.log(`${LOG_PREFIX}   Set metadata.originalName: "${libraryEntry.name}"`);
+            }
+            // ================================================================
+
             // Determine scale
             let scaleFactor = 1;
             let presetName = 'Default';
@@ -398,67 +426,33 @@ export class ModelSystem {
             const originalMinY = loadResult.dimensions?.boundsMin?.y ?? 0;
             const scaledMinY = originalMinY * scaleFactor;
 
-            // Auto-detect rolling stock and enable rail snapping
-            // Check preset name for rolling stock indicators or OO Gauge scale
-            const isRollingStock =
-                presetName.toLowerCase().includes('rolling') ||
-                presetName.toLowerCase().includes('train') ||
-                presetName.toLowerCase().includes('locomotive') ||
-                presetName.toLowerCase().includes('coach') ||
-                presetName.toLowerCase().includes('wagon') ||
-                presetName.toLowerCase().includes('oo gauge') ||
-                libraryEntry.name.toLowerCase().includes('train') ||
-                libraryEntry.name.toLowerCase().includes('locomotive');
+            // Target Y for the bottom of the model
+            const targetY = options.snapToRails
+                ? TRACK_GEOMETRY.RAIL_TOP_Y
+                : options.position.y;
 
-            // Enable snapToRails if explicitly requested OR if auto-detected as rolling stock
-            const shouldSnapToRails = options.snapToRails ?? isRollingStock;
-
-            if (isRollingStock && options.snapToRails === undefined) {
-                console.log(`${LOG_PREFIX} Auto-detected as rolling stock - enabling rail snapping`);
-            }
-
-            // Determine target Y position
-            // If snapToRails is enabled, use the rail top height regardless of click position
-            let targetY = options.position.y;
-            if (shouldSnapToRails) {
-                targetY = TRACK_GEOMETRY.RAIL_TOP_Y;
-                console.log(`${LOG_PREFIX} Snapping to rails: Y = ${targetY.toFixed(4)}m (${TRACK_GEOMETRY.RAIL_TOP_OFFSET * 1000}mm above baseboard)`);
-            }
-
-            // Calculate adjusted position:
-            // We want the bottom of the scaled model to be at targetY
-            // The bottom is at (position.y + scaledMinY), so:
-            // targetY = position.y + scaledMinY
-            // position.y = targetY - scaledMinY
+            // Adjust position so model bottom is at target Y
             const adjustedPosition = options.position.clone();
             adjustedPosition.y = targetY - scaledMinY;
 
-            console.log(`${LOG_PREFIX} Y offset calculation:`);
-            console.log(`${LOG_PREFIX}   Original minY: ${originalMinY.toFixed(4)}m`);
-            console.log(`${LOG_PREFIX}   Scaled minY: ${scaledMinY.toFixed(4)}m`);
-            console.log(`${LOG_PREFIX}   Target Y (bottom): ${targetY.toFixed(4)}m`);
-            console.log(`${LOG_PREFIX}   Adjusted Y (root): ${adjustedPosition.y.toFixed(4)}m`);
-
-            // Apply adjusted position
+            // ================================================================
+            // Apply transforms to root node
+            // ================================================================
             loadResult.rootNode.position = adjustedPosition;
-
-            // Apply rotation
-            const rotationDeg = options.rotationDeg || 0;
-            const rotationRad = rotationDeg * Math.PI / 180;
-            loadResult.rootNode.rotationQuaternion = Quaternion.FromEulerAngles(0, rotationRad, 0);
-
-            // Apply scale
             loadResult.rootNode.scaling = new Vector3(scaleFactor, scaleFactor, scaleFactor);
 
-            // Enable the model
+            // Apply rotation
+            const rotationRad = (options.rotationDeg || 0) * Math.PI / 180;
+            loadResult.rootNode.rotationQuaternion = Quaternion.FromEulerAngles(0, rotationRad, 0);
+
+            // Make visible
             loadResult.rootNode.setEnabled(true);
 
-            // Store instance ID in meshes for picking
+            // Store metadata for selection
             for (const mesh of loadResult.meshes) {
                 mesh.metadata = {
                     ...mesh.metadata,
-                    placedModelId: instanceId,
-                    libraryId: libraryEntry.id
+                    placedModelId: instanceId
                 };
             }
 
@@ -485,7 +479,7 @@ export class ModelSystem {
             console.log(`${LOG_PREFIX} Placed model: ${instanceId}`);
             console.log(`${LOG_PREFIX}   Position: (${adjustedPosition.x.toFixed(3)}, ${adjustedPosition.y.toFixed(3)}, ${adjustedPosition.z.toFixed(3)})`);
             console.log(`${LOG_PREFIX}   Scale: ${scaleFactor.toFixed(4)} (${presetName})`);
-            console.log(`${LOG_PREFIX}   Model bottom now at Y: ${options.position.y.toFixed(4)}m`);
+            console.log(`${LOG_PREFIX}   Model bottom now at Y: ${targetY.toFixed(4)}m`);
 
             return placedModel;
 

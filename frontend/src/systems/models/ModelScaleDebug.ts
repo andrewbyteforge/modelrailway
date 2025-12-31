@@ -14,15 +14,28 @@
  *   window.modelDebug.setScale(0.12)       // Set specific scale factor
  *   window.modelDebug.showInfo()           // Show current model info
  * 
+ * v1.1.0 - Refactored to use centralized constants
+ * v1.0.0 - Original release
+ * 
  * @module ModelScaleDebug
  * @author Model Railway Workbench
- * @version 1.0.0
+ * @version 1.1.0
  */
 
 import type { Scene } from '@babylonjs/core/scene';
 import type { ModelSystem, PlacedModel } from './ModelSystem';
-import { ModelScaleHelper, OO_ROLLING_STOCK_TARGETS, type RollingStockType } from './ModelScaleHelper';
+import { ModelScaleHelper } from './ModelScaleHelper';
 import { Vector3 } from '@babylonjs/core/Maths/math.vector';
+
+// ============================================================================
+// IMPORTS FROM CENTRALIZED CONSTANTS
+// ============================================================================
+
+import {
+    OO_ROLLING_STOCK_TARGETS,
+    TRACK_GEOMETRY,
+    type RollingStockType
+} from '../../constants';
 
 // ============================================================================
 // CONSTANTS
@@ -72,9 +85,6 @@ export function setupModelScaleDebug(
     modelSystem: ModelSystem
 ): void {
     console.log(`${LOG_PREFIX} Setting up console debug utilities...`);
-
-    // Track geometry constants
-    const RAIL_TOP_HEIGHT = 0.008; // 8mm above baseboard
 
     /**
      * Get the currently selected model
@@ -213,15 +223,15 @@ export function setupModelScaleDebug(
         // Calculate scaled min Y (bottom of model)
         const scaledMinY = (dims.center.y - dims.height / 2) * scale;
 
-        // Position so bottom touches rail top
-        const newY = RAIL_TOP_HEIGHT - scaledMinY;
+        // Position so bottom touches rail top (using centralized constant)
+        const newY = TRACK_GEOMETRY.RAIL_TOP_OFFSET_M - scaledMinY;
 
         // Update position
         const newPos = model.position.clone();
         newPos.y = newY;
         modelSystem.moveModel(model.id, newPos);
 
-        console.log(`${LOG_PREFIX} Y position adjusted: ${newY.toFixed(4)}m (rail top: ${RAIL_TOP_HEIGHT}m)`);
+        console.log(`${LOG_PREFIX} Y position adjusted: ${newY.toFixed(4)}m (rail top: ${TRACK_GEOMETRY.RAIL_TOP_OFFSET_M}m)`);
     }
 
     /**
@@ -239,9 +249,9 @@ export function setupModelScaleDebug(
      */
     function showHelp(): void {
         console.log(`
-${LOG_PREFIX} ═══════════════════════════════════════════════════════════
+${LOG_PREFIX} ════════════════════════════════════════════════════════════
 ${LOG_PREFIX} MODEL SCALE DEBUG COMMANDS
-${LOG_PREFIX} ═══════════════════════════════════════════════════════════
+${LOG_PREFIX} ════════════════════════════════════════════════════════════
 
   window.modelDebug.showInfo()
     → Show dimensions and scale of selected model
@@ -268,9 +278,9 @@ ${LOG_PREFIX} ══════════════════════
     → Decrease scale by 5%
 
   window.modelDebug.fixHeight()
-    → Position model on rail top (8mm)
+    → Position model on rail top (${TRACK_GEOMETRY.RAIL_TOP_OFFSET_M * 1000}mm)
 
-${LOG_PREFIX} ═══════════════════════════════════════════════════════════
+${LOG_PREFIX} ════════════════════════════════════════════════════════════
         `);
     }
 

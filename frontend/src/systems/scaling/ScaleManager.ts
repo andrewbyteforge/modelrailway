@@ -14,9 +14,13 @@
  * - MIN_SCALE = 0.0025 (0.25%)
  * - MAX_SCALE = 1.0 (100%)
  * 
+ * SCALE INCREMENTS (v2.2.0):
+ * - Normal scroll: +/- 0.25 per notch (1.0 → 1.25 → 1.50 → 1.75)
+ * - Fine scroll (Shift): +/- 0.05 per notch (1.0 → 1.05 → 1.10)
+ * 
  * @module ScaleManager
  * @author Model Railway Workbench
- * @version 2.0.0 - Updated scale range to 0.25%-100%
+ * @version 2.2.0 - Fixed to use ADDITIVE 0.25 increments
  */
 
 import { Scene } from '@babylonjs/core/scene';
@@ -32,7 +36,8 @@ import {
     ScaleConstraintsHandler,
     getGlobalConstraintsHandler,
     GLOBAL_SCALE_LIMITS,
-    formatScalePercent
+    formatScalePercent,
+    SCALE_STEP_CONFIG
 } from './ScaleConstraints';
 import { ScalePresetsManager, getGlobalPresetsManager } from './ScalePresets';
 
@@ -51,7 +56,6 @@ import {
 } from '../../types/scaling.types';
 
 import {
-    calculateScrollScale,
     calculatePivotAdjustedPosition,
     scalesEqual,
     formatScale
@@ -63,6 +67,26 @@ import {
 
 /** Logging prefix */
 const LOG_PREFIX = '[ScaleManager]';
+
+// ============================================================================
+// ADDITIVE SCALE STEP CONFIGURATION
+// ============================================================================
+
+/**
+ * Additive step sizes for scale adjustments
+ * 
+ * These are ADDED/SUBTRACTED from the current scale, not multiplied.
+ * 
+ * Normal: 1.0 → 1.25 → 1.50 → 1.75 → 2.00 (adding 0.25 each time)
+ * Fine:   1.0 → 1.05 → 1.10 → 1.15 → 1.20 (adding 0.05 each time)
+ */
+const ADDITIVE_SCALE_STEPS = {
+    /** Normal scroll step: +/- 0.25 (25%) */
+    NORMAL: 0.25,
+
+    /** Fine scroll step (with Shift): +/- 0.05 (5%) */
+    FINE: 0.05,
+} as const;
 
 // ============================================================================
 // TYPES
@@ -107,9 +131,13 @@ interface ScaleHistoryEntry {
  * 
  * Scale range: 0.25% to 100%
  * 
+ * Scroll increments (ADDITIVE):
+ * - Normal: +/- 0.25 per scroll (1.0 → 1.25 → 1.50)
+ * - Fine (Shift): +/- 0.05 per scroll (1.0 → 1.05 → 1.10)
+ * 
  * Provides a unified interface for:
  * - Gizmo-based interactive scaling
- * - Hotkey+scroll scaling
+ * - Hotkey+scroll scaling (0.25 additive increments)
  * - Numeric input scaling
  * - Preset application
  * - Constraint enforcement
@@ -195,7 +223,7 @@ export class ScaleManager {
         // Create gizmo (not initialized yet)
         this.gizmo = new ScaleGizmo(scene);
 
-        console.log(`${LOG_PREFIX} Created`);
+        console.log(`${LOG_PREFIX} Created with additive steps: ±${ADDITIVE_SCALE_STEPS.NORMAL} normal, ±${ADDITIVE_SCALE_STEPS.FINE} fine`);
     }
 
     // ========================================================================
@@ -241,20 +269,29 @@ export class ScaleManager {
     }
 
     /**
-     * Log control instructions with scale range info
+     * Log control instructions with scale range and increment info
      */
     private logControls(): void {
         console.log('');
-        console.log('=== Scale Controls ===');
-        console.log(`  Scale range: ${GLOBAL_SCALE_LIMITS.MIN_PERCENT}% - ${GLOBAL_SCALE_LIMITS.MAX_PERCENT}%`);
-        console.log(`  Hold '${this.hotkeyConfig.scaleKey.toUpperCase()}' + Scroll → Scale selected object`);
-        console.log(`  + Shift                    → Fine adjustment`);
-        console.log(`  '${this.hotkeyConfig.resetKey.toUpperCase()}'                      → Reset to original scale`);
-        console.log(`  '${this.hotkeyConfig.lockKey.toUpperCase()}'                      → Toggle scale lock`);
-        console.log('  Drag gizmo handles         → Interactive scaling');
-        console.log('========================');
+        console.log('╔════════════════════════════════════════════════════════════╗');
+        console.log('║                    SCALE CONTROLS                          ║');
+        console.log('╠════════════════════════════════════════════════════════════╣');
+        console.log(`║  Scale range: ${GLOBAL_SCALE_LIMITS.MIN_PERCENT}% - ${GLOBAL_SCALE_LIMITS.MAX_PERCENT}%                                  ║`);
+        console.log(`║  Hold 'S' + Scroll → Scale ±${ADDITIVE_SCALE_STEPS.NORMAL} per notch                 ║`);
+        console.log(`║  + Shift           → Fine scale ±${ADDITIVE_SCALE_STEPS.FINE} per notch             ║`);
+        console.log(`║  'R'               → Reset to original scale                ║`);
+        console.log(`║  'L'               → Toggle scale lock                       ║`);
+        console.log('║  Drag gizmo        → Interactive scaling                   ║');
+        console.log('╚════════════════════════════════════════════════════════════╝');
+        console.log('');
+        console.log(`${LOG_PREFIX} Example: 1.0 → 1.25 → 1.50 → 1.75 → 2.00 (scroll up)`);
+        console.log(`${LOG_PREFIX} Example: 1.0 → 0.75 → 0.50 → 0.25 (scroll down)`);
         console.log('');
     }
+
+    // ========================================================================
+    // GIZMO EVENTS
+    // ========================================================================
 
     /**
      * Setup gizmo event handling
@@ -417,11 +454,15 @@ export class ScaleManager {
     }
 
     // ========================================================================
-    // WHEEL EVENTS (SCROLL-TO-SCALE)
+    // WHEEL EVENTS (SCROLL-TO-SCALE WITH ADDITIVE 0.25 INCREMENTS)
     // ========================================================================
 
     /**
      * Setup wheel event handling for scroll-to-scale
+     * 
+     * Uses ADDITIVE increments:
+     * - Normal: S + Scroll → +/- 0.25 per notch (1.0 → 1.25 → 1.50)
+     * - Fine:   S + Shift + Scroll → +/- 0.05 per notch (1.0 → 1.05 → 1.10)
      */
     private setupWheelEvents(): void {
         const canvas = this.scene.getEngine().getRenderingCanvas();
@@ -444,16 +485,28 @@ export class ScaleManager {
             const registered = this.registeredObjects.get(this.state.selectedObjectId);
             if (!registered || registered.scalable.scaleLocked) return;
 
-            // Calculate new scale from scroll
-            const newScale = calculateScrollScale(
-                registered.scalable.currentScale,
-                -event.deltaY, // Invert for natural scroll direction
-                this.hotkeyConfig.scrollSensitivity,
-                this.state.shiftHeld,
-                this.hotkeyConfig.fineMultiplier
-            );
+            // ----------------------------------------------------------------
+            // ADDITIVE SCALE CALCULATION
+            // This ADDS or SUBTRACTS a fixed amount, not multiplies!
+            // ----------------------------------------------------------------
 
-            // Clamp to global limits before applying
+            // Determine scroll direction (-1 for down, +1 for up)
+            const direction = Math.sign(-event.deltaY); // Invert for natural scroll
+            if (direction === 0) return;
+
+            // Choose step size based on Shift key (fine mode)
+            const step = this.state.shiftHeld
+                ? ADDITIVE_SCALE_STEPS.FINE   // 0.05 with Shift
+                : ADDITIVE_SCALE_STEPS.NORMAL; // 0.25 normal
+
+            // Calculate new scale by ADDING the step
+            const currentScale = registered.scalable.currentScale;
+            const newScale = currentScale + (direction * step);
+
+            // Log the calculation for debugging
+            console.log(`${LOG_PREFIX} Scale: ${currentScale.toFixed(2)} ${direction > 0 ? '+' : '-'} ${step} = ${newScale.toFixed(2)}`);
+
+            // Clamp to global limits
             const clampedScale = this.constraints.clampToGlobalLimits(newScale);
 
             // Apply with constraints
@@ -551,19 +604,19 @@ export class ScaleManager {
             registered.scalable.currentScale
         );
 
-        console.log(`${LOG_PREFIX} Selected: ${objectId} (scale: ${formatScalePercent(registered.scalable.currentScale)})`);
-
-        // Emit event
+        // Emit selection event
         this.emit({
             type: 'scale-start',
             objectId,
             scale: registered.scalable.currentScale,
             timestamp: Date.now()
         });
+
+        console.log(`${LOG_PREFIX} Selected: ${objectId} (scale: ${formatScalePercent(registered.scalable.currentScale)})`);
     }
 
     /**
-     * Deselect the current object
+     * Deselect current object
      */
     deselectObject(): void {
         if (!this.state.selectedObjectId) return;
@@ -573,10 +626,18 @@ export class ScaleManager {
         // Detach gizmo
         this.gizmo.detach();
 
-        // Reset state
+        // Clear state
         this.state.selectedObjectId = null;
         this.state.previewScale = null;
         this.state.lastCommittedScale = null;
+        this.state.gizmoState = 'idle';
+
+        // Emit deselection event
+        this.emit({
+            type: 'scale-end',
+            objectId,
+            timestamp: Date.now()
+        });
 
         console.log(`${LOG_PREFIX} Deselected: ${objectId}`);
     }
@@ -593,7 +654,7 @@ export class ScaleManager {
     // ========================================================================
 
     /**
-     * Set scale for an object (clamped to 0.25% - 100%)
+     * Set scale for an object
      * 
      * @param objectId - Object ID
      * @param scale - New scale factor (0.0025 to 1.0)
@@ -605,35 +666,33 @@ export class ScaleManager {
 
     /**
      * Internal scale setting with source tracking
-     * Enforces global scale limits (0.25% - 100%)
      */
     private setScaleInternal(
         objectId: string,
         scale: number,
-        source: 'gizmo' | 'panel' | 'hotkey' | 'preset' | 'api'
+        source: 'api' | 'gizmo' | 'hotkey' | 'preset'
     ): ScaleOperationResult {
         const registered = this.registeredObjects.get(objectId);
         if (!registered) {
             return { success: false, error: 'Object not registered' };
         }
 
-        // Check lock
-        if (registered.scalable.scaleLocked) {
-            return { success: false, error: 'Object scale is locked' };
+        if (registered.scalable.scaleLocked && source !== 'api') {
+            return { success: false, error: 'Scale is locked' };
         }
 
-        // Apply constraints (includes global 0.25% - 100% limits)
+        // Apply constraints
         const constrained = this.constraints.applyConstraints(
             scale,
             registered.scalable.category
         );
 
-        if (!constrained.success) {
+        if (!constrained.success || constrained.finalScale === undefined) {
             return constrained;
         }
 
+        const finalScale = constrained.finalScale;
         const previousScale = registered.scalable.currentScale;
-        const finalScale = constrained.finalScale!;
 
         // Skip if no change
         if (scalesEqual(previousScale, finalScale)) {
@@ -862,6 +921,16 @@ export class ScaleManager {
      */
     getScaleLimits(): { min: number; max: number; minPercent: number; maxPercent: number } {
         return this.constraints.getGlobalRange();
+    }
+
+    /**
+     * Get additive scale step settings
+     */
+    getScaleSteps(): { normal: number; fine: number } {
+        return {
+            normal: ADDITIVE_SCALE_STEPS.NORMAL,
+            fine: ADDITIVE_SCALE_STEPS.FINE
+        };
     }
 
     // ========================================================================

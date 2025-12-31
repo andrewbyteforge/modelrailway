@@ -7,14 +7,19 @@
  * with the train system:
  * - Click-to-place workflow for imported rolling stock
  * - Automatic edge detection and positioning
+ * - Correct height positioning (model bottom on rail top)
+ * - Optional auto-scaling to OO gauge dimensions
  * - Train controller creation and registration
  * - Visual feedback during placement
  * 
- * This bridges the gap between ModelImportButton/TrackModelPlacer and TrainSystem.
+ * CRITICAL HEIGHTS (OO Gauge):
+ * - Baseboard surface:  0.950m
+ * - Rail top surface:   0.958m (8mm above baseboard)
+ * - Model bottom:       Should touch rail top (0.958m)
  * 
  * @module RollingStockPlacer
  * @author Model Railway Workbench
- * @version 1.0.0
+ * @version 2.0.0 - Fixed rail height positioning
  */
 
 import { Scene } from '@babylonjs/core/scene';
@@ -23,8 +28,16 @@ import { AbstractMesh } from '@babylonjs/core/Meshes/abstractMesh';
 import { Vector3 } from '@babylonjs/core/Maths/math.vector';
 import { PointerEventTypes } from '@babylonjs/core/Events/pointerEvents';
 import { Observable } from '@babylonjs/core/Misc/observable';
+
 import { TrainSystem } from './TrainSystem';
 import { TrackEdgeFinder, type EdgeFindResult } from './TrackEdgeFinder';
+import {
+    TrainPositionHelper,
+    getTrainPositionHelper,
+    TRACK_HEIGHTS,
+    type PositionOptions,
+    type AutoScaleResult
+} from './TrainPositionHelper';
 import type { TrainController } from './TrainController';
 import type { TrackSystem } from '../track/TrackSystem';
 
@@ -38,9 +51,6 @@ const LOG_PREFIX = '[RollingStockPlacer]';
 /** Maximum distance from track to allow placement */
 const MAX_PLACEMENT_DISTANCE = 0.05; // 50mm
 
-/** Rail surface height offset */
-const RAIL_HEIGHT = 0.005; // 5mm
-
 // ============================================================================
 // TYPE DEFINITIONS
 // ============================================================================
@@ -52,6 +62,9 @@ export interface PendingModel {
     /** Root transform node */
     rootNode: TransformNode;
 
+    /** All meshes in the model */
+    meshes: AbstractMesh[];
+
     /** Model name */
     name: string;
 
@@ -60,6 +73,12 @@ export interface PendingModel {
 
     /** Library entry ID (optional) */
     libraryEntryId?: string;
+
+    /** Rolling stock type hint for auto-scaling */
+    typeHint?: 'locomotive' | 'coach' | 'wagon';
+
+    /** Whether to auto-scale to OO gauge */
+    autoScale?: boolean;
 }
 
 /**
@@ -77,6 +96,20 @@ export interface PlacementResult {
 
     /** World position */
     position: Vector3;
+
+    /** Scale result if auto-scaling was applied */
+    scaleResult?: AutoScaleResult;
+}
+
+/**
+ * Placement end event data
+ */
+export interface PlacementEndEvent {
+    /** Whether placement was successful */
+    success: boolean;
+
+    /** Placement result if successful */
+    result?: PlacementResult;
 }
 
 // ============================================================================
@@ -90,57 +123,75 @@ export interface PlacementResult {
  * When a model is queued for placement, clicking on track places it
  * at that location and registers it with the train system.
  * 
+ * v2.0.0 Changes:
+ * - Fixed rail height positioning (was 5mm, now correct 8mm)
+ * - Added model bounding box calculation for proper bottom placement
+ * - Added optional auto-scaling to OO gauge dimensions
+ * - Integrated TrainPositionHelper for consistent positioning
+ * 
  * @example
  * ```typescript
- * const placer = new RollingStockPlacer(scene, trackSystem, trainSystem);
- * placer.initialize();
+ * const placer = new RollingStockPlacer(scene, trainSystem, trackSystem);
+ * await placer.initialize();
  * 
- * // Queue a model for placement
- * placer.queueForPlacement(modelRoot, 'Class 66', 'locomotive');
- * // User clicks on track -> model is placed and registered
+ * // Queue a model for placement with auto-scaling
+ * placer.queueForPlacement(rootNode, meshes, 'Class 66', 'locomotive', {
+ *     autoScale: true,
+ *     typeHint: 'locomotive'
+ * });
+ * 
+ * // Listen for placement completion
+ * placer.onPlacementEnded.add((event) => {
+ *     if (event.success) {
+ *         console.log('Train placed:', event.result.controller.info.name);
+ *     }
+ * });
  * ```
  */
 export class RollingStockPlacer {
     // ========================================================================
-    // PRIVATE STATE
+    // PRIVATE PROPERTIES
     // ========================================================================
 
-    /** Babylon scene */
+    /** Babylon.js scene */
     private scene: Scene;
 
-    /** Track system reference */
-    private trackSystem: TrackSystem;
-
-    /** Train system reference */
+    /** Reference to train system */
     private trainSystem: TrainSystem;
 
-    /** Edge finder utility */
+    /** Track edge finder for locating edges */
     private edgeFinder: TrackEdgeFinder;
 
-    /** Currently pending model for placement */
+    /** Position helper for correct height placement */
+    private positionHelper: TrainPositionHelper;
+
+    /** Whether currently in placement mode */
+    private isPlacementMode: boolean = false;
+
+    /** Model pending placement */
     private pendingModel: PendingModel | null = null;
 
-    /** Preview result during hover */
+    /** Current preview result */
     private previewResult: EdgeFindResult | null = null;
 
     /** Pointer observer reference */
     private pointerObserver: any = null;
 
-    /** Is placement mode active */
-    private isPlacementMode: boolean = false;
+    /** Whether auto-scale is enabled by default */
+    private defaultAutoScale: boolean = false;
 
     // ========================================================================
     // OBSERVABLES
     // ========================================================================
 
-    /** Emitted when placement mode starts */
+    /** Fired when placement mode starts */
     public onPlacementStarted: Observable<PendingModel> = new Observable();
 
-    /** Emitted when placement mode ends (success or cancel) */
-    public onPlacementEnded: Observable<{ success: boolean; result?: PlacementResult }> = new Observable();
+    /** Fired when placement mode ends (success or cancel) */
+    public onPlacementEnded: Observable<PlacementEndEvent> = new Observable();
 
-    /** Emitted when placement is successful */
-    public onPlaced: Observable<PlacementResult> = new Observable();
+    /** Fired when preview position updates */
+    public onPreviewUpdate: Observable<EdgeFindResult | null> = new Observable();
 
     // ========================================================================
     // CONSTRUCTOR
@@ -148,23 +199,31 @@ export class RollingStockPlacer {
 
     /**
      * Create a new RollingStockPlacer
-     * @param scene - Babylon scene
-     * @param trackSystem - Track system reference
-     * @param trainSystem - Train system reference
+     * 
+     * @param scene - Babylon.js scene
+     * @param trainSystem - Train system for registration
+     * @param trackSystem - Track system for edge finding
      */
     constructor(
         scene: Scene,
-        trackSystem: TrackSystem,
-        trainSystem: TrainSystem
+        trainSystem: TrainSystem,
+        trackSystem: TrackSystem
     ) {
         this.scene = scene;
-        this.trackSystem = trackSystem;
         this.trainSystem = trainSystem;
 
-        // Create edge finder
-        this.edgeFinder = new TrackEdgeFinder(trackSystem.getGraph());
+        // Create edge finder from track graph
+        const graph = trackSystem.getGraph();
+        if (!graph) {
+            throw new Error(`${LOG_PREFIX} TrackSystem must have a valid graph`);
+        }
+        this.edgeFinder = new TrackEdgeFinder(graph);
 
-        console.log(`${LOG_PREFIX} Rolling stock placer created`);
+        // Get position helper
+        this.positionHelper = getTrainPositionHelper();
+
+        console.log(`${LOG_PREFIX} Created`);
+        console.log(`${LOG_PREFIX} Rail top height: ${TRACK_HEIGHTS.RAIL_TOP_Y.toFixed(4)}m`);
     }
 
     // ========================================================================
@@ -174,17 +233,17 @@ export class RollingStockPlacer {
     /**
      * Initialize the placer
      */
-    initialize(): void {
-        this.setupPointerHandling();
-        this.setupKeyboardHandling();
+    async initialize(): Promise<void> {
+        // Setup pointer events
+        this.setupPointerEvents();
 
-        console.log(`${LOG_PREFIX} ✓ Initialized`);
+        console.log(`${LOG_PREFIX} Initialized`);
     }
 
     /**
      * Setup pointer event handling
      */
-    private setupPointerHandling(): void {
+    private setupPointerEvents(): void {
         this.pointerObserver = this.scene.onPointerObservable.add((pointerInfo) => {
             if (!this.isPlacementMode) return;
 
@@ -199,18 +258,18 @@ export class RollingStockPlacer {
         });
     }
 
-    /**
-     * Setup keyboard handling
-     */
-    private setupKeyboardHandling(): void {
-        window.addEventListener('keydown', (event) => {
-            if (!this.isPlacementMode) return;
+    // ========================================================================
+    // CONFIGURATION
+    // ========================================================================
 
-            if (event.key === 'Escape') {
-                event.preventDefault();
-                this.cancelPlacement();
-            }
-        });
+    /**
+     * Enable or disable auto-scaling by default
+     * 
+     * @param enabled - Whether to auto-scale new models
+     */
+    setDefaultAutoScale(enabled: boolean): void {
+        this.defaultAutoScale = enabled;
+        console.log(`${LOG_PREFIX} Default auto-scale: ${enabled}`);
     }
 
     // ========================================================================
@@ -219,27 +278,50 @@ export class RollingStockPlacer {
 
     /**
      * Queue a model for placement on track
+     * 
      * @param rootNode - Root transform node of the model
-     * @param name - Model name
-     * @param category - Model category (locomotive, coach, wagon, etc.)
-     * @param libraryEntryId - Optional library entry ID
+     * @param meshes - All meshes in the model (for bounds calculation)
+     * @param name - Display name
+     * @param category - Category (locomotive, coach, wagon)
+     * @param options - Optional placement options
      */
     queueForPlacement(
         rootNode: TransformNode,
+        meshes: AbstractMesh[],
         name: string,
         category: string,
-        libraryEntryId?: string
+        options?: {
+            libraryEntryId?: string;
+            typeHint?: 'locomotive' | 'coach' | 'wagon';
+            autoScale?: boolean;
+        }
     ): void {
         // Cancel any existing placement
         if (this.pendingModel) {
             this.cancelPlacement();
         }
 
+        // Determine type hint from category if not provided
+        let typeHint = options?.typeHint;
+        if (!typeHint) {
+            const lowerCategory = category.toLowerCase();
+            if (lowerCategory.includes('loco') || lowerCategory.includes('engine')) {
+                typeHint = 'locomotive';
+            } else if (lowerCategory.includes('coach') || lowerCategory.includes('carriage')) {
+                typeHint = 'coach';
+            } else if (lowerCategory.includes('wagon') || lowerCategory.includes('freight')) {
+                typeHint = 'wagon';
+            }
+        }
+
         this.pendingModel = {
             rootNode,
+            meshes,
             name,
             category,
-            libraryEntryId
+            libraryEntryId: options?.libraryEntryId,
+            typeHint,
+            autoScale: options?.autoScale ?? this.defaultAutoScale
         };
 
         this.isPlacementMode = true;
@@ -247,13 +329,56 @@ export class RollingStockPlacer {
         // Hide the model initially until we have a valid preview
         rootNode.setEnabled(false);
 
+        // Log model info
+        const bounds = this.positionHelper.calculateModelBounds(rootNode, meshes);
+        console.log(`${LOG_PREFIX} Queued "${name}" for placement`);
+        console.log(`${LOG_PREFIX}   Category: ${category}`);
+        console.log(`${LOG_PREFIX}   Type hint: ${typeHint || 'auto-detect'}`);
+        console.log(`${LOG_PREFIX}   Auto-scale: ${this.pendingModel.autoScale}`);
+        console.log(`${LOG_PREFIX}   Model size: ${(bounds.width * 1000).toFixed(1)}mm × ${(bounds.height * 1000).toFixed(1)}mm × ${(bounds.depth * 1000).toFixed(1)}mm`);
+
         // Notify observers
         this.onPlacementStarted.notifyObservers(this.pendingModel);
 
         // Show instructions
         this.showPlacementInstructions();
+    }
 
-        console.log(`${LOG_PREFIX} Queued "${name}" for placement - click on track to place`);
+    /**
+     * Queue for placement (simplified overload without meshes array)
+     * Will collect meshes from the rootNode
+     */
+    queueForPlacementSimple(
+        rootNode: TransformNode,
+        name: string,
+        category: string,
+        libraryEntryId?: string
+    ): void {
+        // Collect meshes from the node hierarchy
+        const meshes = this.collectMeshes(rootNode);
+
+        this.queueForPlacement(rootNode, meshes, name, category, { libraryEntryId });
+    }
+
+    /**
+     * Collect all meshes from a node hierarchy
+     */
+    private collectMeshes(node: TransformNode): AbstractMesh[] {
+        const meshes: AbstractMesh[] = [];
+
+        const traverse = (n: TransformNode) => {
+            if (n instanceof AbstractMesh) {
+                meshes.push(n);
+            }
+            for (const child of n.getChildren()) {
+                if (child instanceof TransformNode) {
+                    traverse(child);
+                }
+            }
+        };
+
+        traverse(node);
+        return meshes;
     }
 
     /**
@@ -282,7 +407,6 @@ export class RollingStockPlacer {
 
     /**
      * Check if placement mode is active
-     * @returns true if in placement mode
      */
     isInPlacementMode(): boolean {
         return this.isPlacementMode;
@@ -349,21 +473,43 @@ export class RollingStockPlacer {
         if (!this.pendingModel) return;
 
         this.previewResult = result;
-        const model = this.pendingModel.rootNode;
+        const model = this.pendingModel;
+        const rootNode = model.rootNode;
 
-        // Enable and position
-        model.setEnabled(true);
+        // Enable and position the model for preview
+        rootNode.setEnabled(true);
 
-        // Set position (with rail height offset)
-        model.position.copyFrom(result.position);
-        model.position.y += RAIL_HEIGHT;
+        // ----------------------------------------------------------------
+        // CORRECT POSITIONING: Use TrainPositionHelper
+        // ----------------------------------------------------------------
+
+        // Build track position (X/Z from edge, Y will be calculated)
+        const trackPosition = new Vector3(
+            result.position.x,
+            0, // Will be recalculated
+            result.position.z
+        );
+
+        // Position the model correctly on the rails
+        this.positionHelper.positionOnTrack(
+            rootNode,
+            model.meshes,
+            trackPosition,
+            {
+                // Don't auto-scale during preview, just position
+                autoScale: false
+            }
+        );
 
         // Rotate to face along track
         const angle = Math.atan2(result.forward.x, result.forward.z);
-        model.rotation.y = angle;
+        rootNode.rotation.y = angle;
 
-        // Optional: Add a slight transparency or highlight to indicate preview
-        this.applyPreviewMaterial(model);
+        // Apply preview transparency
+        this.applyPreviewMaterial(rootNode);
+
+        // Notify observers
+        this.onPreviewUpdate.notifyObservers(result);
     }
 
     /**
@@ -374,6 +520,7 @@ export class RollingStockPlacer {
             this.pendingModel.rootNode.setEnabled(false);
         }
         this.previewResult = null;
+        this.onPreviewUpdate.notifyObservers(null);
     }
 
     /**
@@ -382,6 +529,7 @@ export class RollingStockPlacer {
     private applyPreviewMaterial(node: TransformNode): void {
         // For now, just ensure the model is visible
         // Could add transparency or glow effect here
+        // TODO: Add semi-transparent preview effect
     }
 
     /**
@@ -389,6 +537,7 @@ export class RollingStockPlacer {
      */
     private removePreviewMaterial(node: TransformNode): void {
         // Restore original materials
+        // TODO: Restore from preview effect
     }
 
     // ========================================================================
@@ -404,20 +553,68 @@ export class RollingStockPlacer {
         const model = this.pendingModel;
         const rootNode = model.rootNode;
 
+        console.log(`${LOG_PREFIX} Placing "${model.name}" on track...`);
+
         // Remove preview effect
         this.removePreviewMaterial(rootNode);
 
         // Enable the model
         rootNode.setEnabled(true);
 
-        // Final positioning (same as preview but permanent)
-        rootNode.position.copyFrom(result.position);
-        rootNode.position.y += RAIL_HEIGHT;
+        // ----------------------------------------------------------------
+        // FINAL POSITIONING WITH OPTIONAL AUTO-SCALE
+        // ----------------------------------------------------------------
 
+        const trackPosition = new Vector3(
+            result.position.x,
+            0,
+            result.position.z
+        );
+
+        let scaleResult: AutoScaleResult | undefined;
+
+        if (model.autoScale) {
+            // Auto-scale and position
+            const combined = this.positionHelper.autoScaleAndPosition(
+                rootNode,
+                model.meshes,
+                trackPosition,
+                {
+                    autoScale: true,
+                    typeHint: model.typeHint
+                }
+            );
+            scaleResult = combined.scale;
+
+            console.log(`${LOG_PREFIX} Auto-scaled to ${scaleResult.scaleFactor.toFixed(4)}`);
+            console.log(`${LOG_PREFIX}   Detected type: ${scaleResult.detectedType}`);
+            console.log(`${LOG_PREFIX}   Original length: ${(scaleResult.originalLength * 1000).toFixed(1)}mm`);
+            console.log(`${LOG_PREFIX}   Target length: ${(scaleResult.targetLength * 1000).toFixed(1)}mm`);
+        } else {
+            // Just position without scaling
+            this.positionHelper.positionOnTrack(
+                rootNode,
+                model.meshes,
+                trackPosition
+            );
+        }
+
+        // Rotate to face along track
         const angle = Math.atan2(result.forward.x, result.forward.z);
         rootNode.rotation.y = angle;
 
-        // Register with train system
+        // Log final position
+        console.log(`${LOG_PREFIX} Final position: (${rootNode.position.x.toFixed(4)}, ${rootNode.position.y.toFixed(4)}, ${rootNode.position.z.toFixed(4)})`);
+        console.log(`${LOG_PREFIX} Rail top Y: ${TRACK_HEIGHTS.RAIL_TOP_Y.toFixed(4)}m`);
+
+        // Debug: verify positioning
+        const debugInfo = this.positionHelper.getDebugInfo(rootNode, model.meshes);
+        console.log(debugInfo);
+
+        // ----------------------------------------------------------------
+        // REGISTER WITH TRAIN SYSTEM
+        // ----------------------------------------------------------------
+
         const controller = this.trainSystem.addTrain(
             rootNode,
             {
@@ -430,18 +627,16 @@ export class RollingStockPlacer {
         // Place on track edge
         controller.placeOnEdge(result.edge.id, result.t, 1);
 
-        // Auto-select the newly placed train
-        controller.select();
-
-        // Create result
+        // Build placement result
         const placementResult: PlacementResult = {
             controller,
             edgeId: result.edge.id,
             t: result.t,
-            position: result.position.clone()
+            position: rootNode.position.clone(),
+            scaleResult
         };
 
-        // Clear pending state
+        // Clear placement state
         this.pendingModel = null;
         this.previewResult = null;
         this.isPlacementMode = false;
@@ -450,10 +645,12 @@ export class RollingStockPlacer {
         this.hidePlacementInstructions();
 
         // Notify observers
-        this.onPlaced.notifyObservers(placementResult);
-        this.onPlacementEnded.notifyObservers({ success: true, result: placementResult });
+        this.onPlacementEnded.notifyObservers({
+            success: true,
+            result: placementResult
+        });
 
-        console.log(`${LOG_PREFIX} ✓ Placed "${model.name}" on edge ${result.edge.id} at t=${result.t.toFixed(3)}`);
+        console.log(`${LOG_PREFIX} ✓ "${model.name}" placed successfully on edge ${result.edge.id}`);
     }
 
     // ========================================================================
@@ -464,47 +661,73 @@ export class RollingStockPlacer {
      * Show placement instructions overlay
      */
     private showPlacementInstructions(): void {
-        // Remove any existing instructions
-        this.hidePlacementInstructions();
+        // Check if instructions already exist
+        let overlay = document.getElementById('rolling-stock-placement-instructions');
+        if (overlay) return;
 
-        const overlay = document.createElement('div');
+        overlay = document.createElement('div');
         overlay.id = 'rolling-stock-placement-instructions';
-        overlay.style.cssText = `
-            position: fixed;
-            top: 20px;
-            left: 50%;
-            transform: translateX(-50%);
-            background: rgba(0, 0, 0, 0.8);
-            color: white;
-            padding: 12px 24px;
-            border-radius: 8px;
-            font-family: 'Segoe UI', Arial, sans-serif;
-            font-size: 14px;
-            z-index: 2000;
-            display: flex;
-            align-items: center;
-            gap: 12px;
-            box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
-        `;
-
         overlay.innerHTML = `
-            <span style="font-size: 24px;">🚂</span>
-            <div>
-                <strong>Place Rolling Stock</strong><br>
-                <span style="color: #aaa; font-size: 12px;">Click on track to place · Escape to cancel</span>
+            <div style="
+                position: fixed;
+                bottom: 20px;
+                left: 50%;
+                transform: translateX(-50%);
+                background: rgba(0, 0, 0, 0.8);
+                color: white;
+                padding: 12px 24px;
+                border-radius: 8px;
+                font-family: system-ui, sans-serif;
+                font-size: 14px;
+                z-index: 10000;
+                text-align: center;
+                box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+            ">
+                <div style="font-weight: 600; margin-bottom: 4px;">🚂 Place Rolling Stock</div>
+                <div style="opacity: 0.9;">Click on a track piece to place the train</div>
+                <div style="opacity: 0.7; font-size: 12px; margin-top: 4px;">Press Escape to cancel</div>
             </div>
         `;
 
         document.body.appendChild(overlay);
+
+        // Add escape key listener
+        this.setupEscapeKeyHandler();
     }
 
     /**
-     * Hide placement instructions overlay
+     * Hide placement instructions
      */
     private hidePlacementInstructions(): void {
-        const existing = document.getElementById('rolling-stock-placement-instructions');
-        if (existing) {
-            existing.remove();
+        const overlay = document.getElementById('rolling-stock-placement-instructions');
+        if (overlay) {
+            overlay.remove();
+        }
+        this.removeEscapeKeyHandler();
+    }
+
+    /** Escape key handler reference */
+    private escapeHandler: ((e: KeyboardEvent) => void) | null = null;
+
+    /**
+     * Setup escape key to cancel placement
+     */
+    private setupEscapeKeyHandler(): void {
+        this.escapeHandler = (e: KeyboardEvent) => {
+            if (e.key === 'Escape' && this.isPlacementMode) {
+                this.cancelPlacement();
+            }
+        };
+        document.addEventListener('keydown', this.escapeHandler);
+    }
+
+    /**
+     * Remove escape key handler
+     */
+    private removeEscapeKeyHandler(): void {
+        if (this.escapeHandler) {
+            document.removeEventListener('keydown', this.escapeHandler);
+            this.escapeHandler = null;
         }
     }
 
@@ -513,19 +736,14 @@ export class RollingStockPlacer {
     // ========================================================================
 
     /**
-     * Dispose a model node and its children
+     * Dispose a model node and all children
      */
     private disposeModelNode(node: TransformNode): void {
-        // Dispose all descendant meshes
-        const descendants = node.getDescendants(false);
-        for (const child of descendants) {
-            if (child instanceof AbstractMesh) {
-                child.dispose();
-            }
+        try {
+            node.dispose(false, true);
+        } catch (e) {
+            console.warn(`${LOG_PREFIX} Error disposing model:`, e);
         }
-
-        // Dispose the node itself
-        node.dispose();
     }
 
     /**
@@ -540,14 +758,15 @@ export class RollingStockPlacer {
         // Remove pointer observer
         if (this.pointerObserver) {
             this.scene.onPointerObservable.remove(this.pointerObserver);
+            this.pointerObserver = null;
         }
 
         // Clear observables
         this.onPlacementStarted.clear();
         this.onPlacementEnded.clear();
-        this.onPlaced.clear();
+        this.onPreviewUpdate.clear();
 
-        // Hide instructions
+        // Remove UI
         this.hidePlacementInstructions();
 
         console.log(`${LOG_PREFIX} Disposed`);

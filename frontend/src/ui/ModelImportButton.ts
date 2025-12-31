@@ -19,34 +19,23 @@
  * - L to lock/unlock scale
  * - TransformPanel for numeric input and presets
  * 
+ * UPDATED: Train Selection Mode
+ * - Click on train = Defers to TrainSystem for DRIVING controls
+ * - Shift+Click on train = Selects for REPOSITIONING (drag, rotate, etc.)
+ * 
+ * UPDATED: TrainSystem Registration
+ * - Rolling stock is now automatically registered with TrainSystem after placement
+ * - Enables driving controls (throttle, direction, brake, horn)
+ * 
  * Train Orientation Fix:
  * - If trains face sideways on track, use browser console:
  *   window.setTrainOrientation('NEG_Y')  // For Blender exports
  *   window.setTrainOrientation('POS_X')  // For some CAD exports
  *   window.trainOrientationHelp()        // Show all options
  * 
- * FIX APPLIED (v1.4.0):
- * - Models now correctly place ON the baseboard surface (Y=0.95)
- * - Previously, non-rolling stock was placed at Y=0 (below baseboard)
- * - Added SURFACE_HEIGHTS constant for consistent height references
- * 
- * Usage in App.ts:
- *   import { ModelImportButton } from '../ui/ModelImportButton';
- *   
- *   // In initialize():
- *   const importButton = new ModelImportButton(this.scene);
- *   await importButton.initialize();  // NOTE: Now async!
- *   
- *   // Connect WorldOutliner after both are initialized:
- *   importButton.setWorldOutliner(worldOutliner);
- *   
- *   // Add scale controls to UIManager settings:
- *   const scaleElement = importButton.getScaleControlsElement();
- *   // Then append scaleElement to your settings section
- * 
  * @module ModelImportButton
  * @author Model Railway Workbench
- * @version 2.1.0 - Moved scale controls to sidebar settings
+ * @version 2.3.0 - Added automatic TrainSystem registration
  */
 
 // ============================================================================
@@ -55,6 +44,7 @@
 
 import { Scene } from '@babylonjs/core/scene';
 import { Vector3 } from '@babylonjs/core/Maths/math.vector';
+import { AbstractMesh } from '@babylonjs/core/Meshes/abstractMesh';
 import { ModelSystem, type PlacedModel } from '../systems/models/ModelSystem';
 import { ModelLibrary, type ModelLibraryEntry, type ModelCategory } from '../systems/models/ModelLibrary';
 import { TrackModelPlacer, registerOrientationTester } from '../systems/models/TrackModelPlacer';
@@ -67,143 +57,119 @@ import type { OutlinerNodeType } from '../types/outliner.types';
 // ============================================================================
 
 import { ScaleManager } from '../systems/scaling/ScaleManager';
-import { SidebarScaleControls } from './components/SidebarScaleControls';
 import { ScalableModelAdapter } from '../systems/scaling/ScalableModelAdapter';
+import { SidebarScaleControls } from './components/SidebarScaleControls';
+import type { IScalable, ScalableAssetCategory } from '../types/scaling.types';
+
+// ============================================================================
+// TRAIN DETECTION IMPORT
+// ============================================================================
+
+import {
+    isTrainMesh,
+    getTrainClickBehavior,
+    type TrainClickBehavior
+} from '../systems/train/TrainMeshDetector';
 
 // ============================================================================
 // CONSTANTS
 // ============================================================================
 
-/** Logging prefix for console output */
+/** Logging prefix */
 const LOG_PREFIX = '[ModelImportButton]';
 
 /** Categories that require track placement */
 const TRACK_PLACEMENT_CATEGORIES = ['rolling_stock'];
 
-/** Small rotation angle in degrees */
-const SMALL_ROTATION_DEG = 5;
-
-/** Large rotation angle in degrees (with Shift) */
-const LARGE_ROTATION_DEG = 22.5;
-
-/**
- * Surface heights for model placement (in metres)
- * These MUST match the values in BaseboardSystem.ts and TrackRenderer.ts
- * 
- * FIX: This constant ensures all placement code uses consistent heights
+/** 
+ * Surface heights for consistent model placement
+ * These match the BaseboardSystem constants
  */
 const SURFACE_HEIGHTS = {
-    /** Height of baseboard surface from world origin (matches BaseboardSystem) */
-    BASEBOARD_TOP: 0.950,
-
-    /** Height offset for ballast/sleepers/rails above baseboard */
-    RAIL_TOP_OFFSET: 0.008,
-
-    /** Total height of rail surface from world origin */
-    get RAIL_TOP_Y(): number {
-        return this.BASEBOARD_TOP + this.RAIL_TOP_OFFSET;
-    }
+    /** Top surface of baseboard */
+    BASEBOARD_TOP: 0.95,
+    /** Rail top height (above baseboard) */
+    RAIL_TOP: 0.97
 } as const;
 
-/**
- * Map model categories to outliner node types
- */
-const CATEGORY_TO_OUTLINER_TYPE: Record<string, OutlinerNodeType> = {
-    'rolling_stock': 'rolling_stock',
-    'locomotive': 'rolling_stock',
-    'coach': 'rolling_stock',
-    'wagon': 'rolling_stock',
+/** Map ModelCategory to ScalableAssetCategory */
+const CATEGORY_MAP: Record<string, ScalableAssetCategory> = {
+    'locomotive': 'rolling-stock',
+    'coach': 'rolling-stock',
+    'wagon': 'rolling-stock',
+    'rolling_stock': 'rolling-stock',
+    'building': 'building',
     'scenery': 'scenery',
-    'building': 'scenery',
-    'buildings': 'scenery',
-    'structure': 'scenery',
-    'vegetation': 'scenery',
-    'accessory': 'scenery',
-    'accessories': 'scenery',
-    'infrastructure': 'scenery',
-    'vehicles': 'scenery',
-    'figures': 'scenery',
-    'custom': 'model',
+    'figure': 'figure',
+    'vehicle': 'vehicle',
+    'accessory': 'accessory',
+    'other': 'other'
 };
-
-// ============================================================================
-// TYPE DEFINITIONS
-// ============================================================================
-
-/**
- * Model forward axis options (for train orientation)
- * Used to fix trains facing wrong direction on track
- */
-type ModelForwardAxis = 'POS_X' | 'NEG_X' | 'POS_Y' | 'NEG_Y' | 'POS_Z' | 'NEG_Z';
 
 // ============================================================================
 // MODEL IMPORT BUTTON CLASS
 // ============================================================================
 
 /**
- * ModelImportButton - Floating button to trigger model import
+ * ModelImportButton - Floating button for model import with track placement
  * 
- * Creates a visible "Import Model" button in the corner of the screen
- * that opens the ModelImportDialog when clicked.
+ * @example
+ * ```typescript
+ * const button = new ModelImportButton(scene);
+ * await button.initialize();
  * 
- * For rolling stock models, requires placement on existing track pieces.
- * 
- * Now includes full UE5-style scaling system with:
- * - Visual gizmo handles for drag-to-scale
- * - Numeric transform panel
- * - Hotkey + scroll scaling
- * - Per-asset-type presets and constraints
+ * // Connect outliner
+ * button.setWorldOutliner(worldOutliner);
+ * ```
  */
 export class ModelImportButton {
     // ========================================================================
-    // PRIVATE PROPERTIES
+    // CORE PROPERTIES
     // ========================================================================
 
-    /** Babylon.js scene reference */
+    /** Babylon scene reference */
     private scene: Scene;
 
-    /** Model system instance */
+    /** Model library singleton */
+    private library: ModelLibrary;
+
+    /** Model system for placing models */
     private modelSystem: ModelSystem | null = null;
 
-    /** Track model placer for rolling stock */
+    /** Track placer for rolling stock */
     private trackPlacer: TrackModelPlacer | null = null;
 
-    /** Button element */
+    /** WorldOutliner reference for bidirectional sync */
+    private worldOutliner: WorldOutliner | null = null;
+
+    // ========================================================================
+    // UI ELEMENTS
+    // ========================================================================
+
+    /** Floating button element */
     private button: HTMLButtonElement | null = null;
 
     /** Status display element */
-    private statusDisplay: HTMLDivElement | null = null;
-
-    /** Library reference */
-    private library: ModelLibrary;
-
-    /** World Outliner reference for scene hierarchy */
-    private worldOutliner: WorldOutliner | null = null;
-
-    /** Bound delete callback for cleanup */
-    private boundDeleteCallback: ((nodeId: string, sceneObjectId: string | null, metadata: Record<string, unknown>) => void) | null = null;
+    private statusDisplay: HTMLElement | null = null;
 
     // ========================================================================
     // SCALING SYSTEM PROPERTIES
     // ========================================================================
 
-    /** Scale manager - central coordinator for all scaling operations */
+    /** Scale manager - central coordinator */
     private scaleManager: ScaleManager | null = null;
 
-    /** Sidebar scale controls for UIManager integration */
+    /** Sidebar scale controls element */
     private sidebarScaleControls: SidebarScaleControls | null = null;
 
     /** Map of model IDs to their scalable adapters */
     private scalableAdapters: Map<string, ScalableModelAdapter> = new Map();
 
-    /** Map of model IDs to their height offsets (in meters) */
+    /** Height offsets for each model (for lifting above baseboard) */
     private modelHeightOffsets: Map<string, number> = new Map();
 
-    /** Whether H key is held for height adjustment */
-    private heightKeyHeld: boolean = false;
-
     // ========================================================================
-    // SELECTION & DRAG PROPERTIES
+    // SELECTION/DRAG PROPERTIES
     // ========================================================================
 
     /** Pointer down position for click detection */
@@ -256,7 +222,7 @@ export class ModelImportButton {
      * Initialize the button, model system, and scaling system
      * Call this after scene is ready
      * 
-     * NOTE: This method is now async due to ScaleManager initialization
+     * NOTE: This method is async due to ScaleManager initialization
      */
     async initialize(): Promise<void> {
         console.log(`${LOG_PREFIX} Initializing...`);
@@ -279,42 +245,33 @@ export class ModelImportButton {
             // ----------------------------------------------------------------
             // Initialize Scale Manager
             // ----------------------------------------------------------------
-            this.scaleManager = new ScaleManager(this.scene, {
-                scaleKey: 's',           // Hold S + scroll to scale
-                resetKey: 'r',           // Press R to reset scale
-                lockKey: 'l',            // Press L to toggle lock
-                scrollSensitivity: 5,    // 5% per scroll notch
-                fineMultiplier: 0.2      // Shift = 20% of normal speed
-            });
+            this.scaleManager = new ScaleManager(this.scene);
             await this.scaleManager.initialize();
             console.log(`${LOG_PREFIX} ✓ ScaleManager initialized`);
 
             // ----------------------------------------------------------------
-            // Create Sidebar Scale Controls (for UIManager settings integration)
-            // Call getScaleControlsElement() to add to sidebar settings
+            // Initialize Sidebar Scale Controls
             // ----------------------------------------------------------------
             this.sidebarScaleControls = new SidebarScaleControls();
             this.sidebarScaleControls.setScaleManager(this.scaleManager);
-
-            // Connect height change callback
             this.sidebarScaleControls.setHeightChangeCallback((objectId, heightOffset) => {
-                this.handleHeightChange(objectId, heightOffset);
+                this.setModelHeightOffset(objectId, heightOffset);
             });
-
-            console.log(`${LOG_PREFIX} ✓ SidebarScaleControls created`);
-
-            // ----------------------------------------------------------------
-            // Setup scale event listeners
-            // ----------------------------------------------------------------
-            this.setupScaleEventListeners();
+            console.log(`${LOG_PREFIX} ✓ SidebarScaleControls initialized`);
 
             // ----------------------------------------------------------------
-            // Register train orientation utilities on window object
+            // Create UI Elements (hidden button, status display)
             // ----------------------------------------------------------------
-            this.registerOrientationUtilities();
+            this.createButton();
+            this.createStatusDisplay();
 
             // ----------------------------------------------------------------
-            // Subscribe to library changes
+            // Register orientation test utility (for debugging train orientation)
+            // ----------------------------------------------------------------
+            registerOrientationTester(this.scene);
+
+            // ----------------------------------------------------------------
+            // Listen for library changes to update status
             // ----------------------------------------------------------------
             this.library.onChange(() => {
                 this.updateStatusDisplay();
@@ -348,6 +305,8 @@ export class ModelImportButton {
         console.log('║              MODEL & TRANSFORM CONTROLS                    ║');
         console.log('╠════════════════════════════════════════════════════════════╣');
         console.log('║  Click model        → Select it                            ║');
+        console.log('║  Click train        → Select for DRIVING (TrainSystem)     ║');
+        console.log('║  Shift+Click train  → Select for REPOSITIONING             ║');
         console.log('║  Drag model         → Move it (XZ plane)                   ║');
         console.log('║  Drag gizmo corner  → Scale uniformly                      ║');
         console.log('║  S + Scroll         → Scale selected object                ║');
@@ -361,431 +320,96 @@ export class ModelImportButton {
         console.log('║  Shift + [ / ]      → Rotate ±22.5°                        ║');
         console.log('║  Delete             → Remove selected model                ║');
         console.log('║  Escape             → Deselect                             ║');
-        console.log('╠════════════════════════════════════════════════════════════╣');
-        console.log('║  Transform controls in Models sidebar → Settings section   ║');
         console.log('╚════════════════════════════════════════════════════════════╝');
-        console.log('');
-        console.log(`${LOG_PREFIX} === TRAIN ORIENTATION HELP ===`);
-        console.log(`${LOG_PREFIX} If trains face wrong way on track, try in console:`);
-        console.log(`${LOG_PREFIX}   window.setTrainOrientation('NEG_Y')  // For Blender exports`);
-        console.log(`${LOG_PREFIX}   window.setTrainOrientation('POS_X')  // For some exports`);
-        console.log(`${LOG_PREFIX}   window.trainOrientationHelp()        // Show all options`);
         console.log('');
     }
 
     // ========================================================================
-    // SCALING SYSTEM METHODS
+    // UI CREATION
     // ========================================================================
 
     /**
-     * Setup listeners for scale system events
-     * Handles scale commits, resets, and lock changes
+     * Create the floating import button (hidden by default)
      */
-    private setupScaleEventListeners(): void {
-        if (!this.scaleManager) return;
+    private createButton(): void {
+        this.button = document.createElement('button');
+        this.button.id = 'model-import-button';
+        this.button.textContent = '📦 Import Model';
+        this.button.title = 'Import 3D Model (GLB/GLTF)';
 
-        this.scaleManager.addEventListener((event) => {
-            switch (event.type) {
-                case 'scale-commit':
-                    // Update the adapter's internal scale when committed
-                    if (event.objectId && event.scale !== undefined) {
-                        const adapter = this.scalableAdapters.get(event.objectId);
-                        if (adapter) {
-                            adapter.setScale(event.scale);
-                            console.log(`${LOG_PREFIX} Scale committed: ${event.objectId} → ${(event.scale * 100).toFixed(1)}%`);
-                        }
-                    }
-                    break;
+        // Style the button
+        Object.assign(this.button.style, {
+            position: 'fixed',
+            bottom: '20px',
+            right: '20px',
+            padding: '12px 20px',
+            fontSize: '14px',
+            fontWeight: 'bold',
+            backgroundColor: '#4CAF50',
+            color: 'white',
+            border: 'none',
+            borderRadius: '8px',
+            cursor: 'pointer',
+            boxShadow: '0 4px 8px rgba(0,0,0,0.3)',
+            zIndex: '1000',
+            display: 'none' // Hidden - use sidebar instead
+        });
 
-                case 'scale-reset':
-                    console.log(`${LOG_PREFIX} Scale reset: ${event.objectId}`);
-                    break;
-
-                case 'lock-changed':
-                    console.log(`${LOG_PREFIX} Scale lock: ${event.objectId} → ${event.data?.locked ? 'LOCKED' : 'unlocked'}`);
-                    break;
+        // Hover effect
+        this.button.addEventListener('mouseenter', () => {
+            if (this.button) {
+                this.button.style.backgroundColor = '#45a049';
             }
         });
 
-        console.log(`${LOG_PREFIX} ✓ Scale event listeners configured`);
-    }
-
-    /**
-     * Register a placed model with the scaling system
-     * Creates a ScalableModelAdapter and registers it with ScaleManager
-     * 
-     * @param placedModel - The placed model instance
-     * @param category - Model category from library
-     */
-    private registerModelForScaling(placedModel: PlacedModel, category: string): void {
-        if (!this.scaleManager) {
-            console.warn(`${LOG_PREFIX} ScaleManager not ready - cannot register for scaling`);
-            return;
-        }
-
-        try {
-            // Create adapter that wraps PlacedModel with IScalable interface
-            const adapter = new ScalableModelAdapter(
-                placedModel,
-                category as ModelCategory
-            );
-
-            // Store adapter for later reference
-            this.scalableAdapters.set(placedModel.id, adapter);
-
-            // Register with scale manager
-            this.scaleManager.registerScalable(
-                adapter,
-                adapter.getTransformNode(),
-                adapter.getMeshes(),
-                adapter.getBoundingRadius()
-            );
-
-            console.log(`${LOG_PREFIX} ✓ Registered for scaling: ${placedModel.id} (${category})`);
-
-        } catch (error) {
-            console.error(`${LOG_PREFIX} Error registering for scaling:`, error);
-        }
-    }
-
-    /**
-     * Unregister a model from the scaling system
-     * Called before deleting a model
-     * 
-     * @param modelId - The model ID to unregister
-     */
-    private unregisterModelFromScaling(modelId: string): void {
-        if (!this.scaleManager) return;
-
-        try {
-            this.scaleManager.unregisterScalable(modelId);
-            this.scalableAdapters.delete(modelId);
-            console.log(`${LOG_PREFIX} Unregistered from scaling: ${modelId}`);
-        } catch (error) {
-            console.error(`${LOG_PREFIX} Error unregistering from scaling:`, error);
-        }
-    }
-
-    // ========================================================================
-    // HEIGHT ADJUSTMENT
-    // ========================================================================
-
-    /**
-     * Handle height change from sidebar controls
-     * Moves the model up or down along the Y axis
-     * 
-     * @param objectId - ID of the model to adjust
-     * @param heightOffset - Height offset in meters (positive = up)
-     */
-    private handleHeightChange(objectId: string, heightOffset: number): void {
-        if (!this.modelSystem) return;
-
-        try {
-            // Get the placed model
-            const placedModel = this.modelSystem.getPlacedModel(objectId);
-            if (!placedModel || !placedModel.rootNode) {
-                console.warn(`${LOG_PREFIX} Model not found for height adjustment: ${objectId}`);
-                return;
+        this.button.addEventListener('mouseleave', () => {
+            if (this.button) {
+                this.button.style.backgroundColor = '#4CAF50';
             }
+        });
 
-            // Get the model's base Y position (where it was originally placed)
-            const baseY = this.getModelBaseY(placedModel);
+        // Click handler
+        this.button.addEventListener('click', () => {
+            this.showImportDialog();
+        });
 
-            // Calculate new Y position
-            const newY = baseY + heightOffset;
-
-            // Update the model's Y position
-            placedModel.rootNode.position.y = newY;
-
-            // Store the height offset
-            this.modelHeightOffsets.set(objectId, heightOffset);
-
-            // Log the change
-            const heightMM = Math.round(heightOffset * 1000);
-            console.log(`${LOG_PREFIX} Height adjusted: ${objectId} → ${heightMM}mm offset (Y=${newY.toFixed(4)})`);
-
-        } catch (error) {
-            console.error(`${LOG_PREFIX} Error adjusting height:`, error);
-        }
+        document.body.appendChild(this.button);
     }
 
     /**
-     * Get the base Y position for a model (where it should sit at height offset 0)
-     * 
-     * @param placedModel - The placed model
-     * @returns Base Y position in meters
+     * Create status display showing library count
      */
-    private getModelBaseY(placedModel: PlacedModel): number {
-        // Check if this is a rolling stock model (placed on track)
-        const libraryEntry = this.library.getModel(placedModel.libraryId);
-        const category = libraryEntry?.category || 'scenery';
+    private createStatusDisplay(): void {
+        this.statusDisplay = document.createElement('div');
+        this.statusDisplay.id = 'model-status-display';
 
-        if (TRACK_PLACEMENT_CATEGORIES.includes(category)) {
-            // Rolling stock sits on rail surface
-            return SURFACE_HEIGHTS.RAIL_TOP_Y;
-        } else {
-            // Other models sit on baseboard surface
-            return SURFACE_HEIGHTS.BASEBOARD_TOP;
-        }
+        Object.assign(this.statusDisplay.style, {
+            position: 'fixed',
+            bottom: '70px',
+            right: '20px',
+            padding: '8px 12px',
+            fontSize: '12px',
+            backgroundColor: 'rgba(0, 0, 0, 0.7)',
+            color: '#aaa',
+            borderRadius: '4px',
+            zIndex: '999',
+            display: 'none' // Hidden by default
+        });
+
+        document.body.appendChild(this.statusDisplay);
+        this.updateStatusDisplay();
     }
 
     /**
-     * Get the current height offset for a model
-     * 
-     * @param modelId - ID of the model
-     * @returns Height offset in meters
+     * Update the status display with current counts
      */
-    private getModelHeightOffset(modelId: string): number {
-        return this.modelHeightOffsets.get(modelId) || 0;
-    }
+    private updateStatusDisplay(): void {
+        if (!this.statusDisplay) return;
 
-    // ========================================================================
-    // TRAIN ORIENTATION UTILITIES
-    // ========================================================================
+        const libraryCount = this.library.getAllModels().length;
+        const placedCount = this.modelSystem?.getPlacedModelCount() || 0;
 
-    /**
-     * Register orientation testing utilities on the window object
-     * 
-     * Allows users to fix train orientation from the browser console
-     * when trains face sideways on the track instead of along it.
-     * 
-     * Available commands:
-     *   window.setTrainOrientation('NEG_Y')  - Set forward axis
-     *   window.getTrainOrientation()         - Get current setting
-     *   window.trainOrientationHelp()        - Show help
-     */
-    private registerOrientationUtilities(): void {
-        if (!this.trackPlacer) return;
-
-        // Register the basic tester from TrackModelPlacer
-        registerOrientationTester(this.trackPlacer);
-
-        // Store reference for closures
-        const placer = this.trackPlacer;
-
-        // ----------------------------------------------------------------
-        // window.setTrainOrientation(axis) - Set the model forward axis
-        // ----------------------------------------------------------------
-        (window as any).setTrainOrientation = (axis: ModelForwardAxis) => {
-            const validAxes: ModelForwardAxis[] = ['POS_X', 'NEG_X', 'POS_Y', 'NEG_Y', 'POS_Z', 'NEG_Z'];
-
-            if (!validAxes.includes(axis)) {
-                console.error(`${LOG_PREFIX} Invalid axis: ${axis}`);
-                console.log(`${LOG_PREFIX} Valid options: ${validAxes.join(', ')}`);
-                return;
-            }
-
-            placer.setModelForwardAxis(axis);
-            console.log(`${LOG_PREFIX} ✓ Train orientation set to: ${axis}`);
-            console.log(`${LOG_PREFIX} Now place a train on the track to test.`);
-
-            // Suggest next axis to try if this doesn't work
-            const currentIndex = validAxes.indexOf(axis);
-            const nextToTry = validAxes[(currentIndex + 1) % validAxes.length];
-            console.log(`${LOG_PREFIX} If still wrong, try: window.setTrainOrientation('${nextToTry}')`);
-        };
-
-        // ----------------------------------------------------------------
-        // window.getTrainOrientation() - Get current orientation setting
-        // ----------------------------------------------------------------
-        (window as any).getTrainOrientation = () => {
-            const current = placer.getModelForwardAxis();
-            console.log(`${LOG_PREFIX} Current train orientation: ${current}`);
-            return current;
-        };
-
-        // ----------------------------------------------------------------
-        // window.trainOrientationHelp() - Display help information
-        // ----------------------------------------------------------------
-        (window as any).trainOrientationHelp = () => {
-            console.log('');
-            console.log('╔════════════════════════════════════════════════════════════╗');
-            console.log('║              TRAIN ORIENTATION HELP                        ║');
-            console.log('╠════════════════════════════════════════════════════════════╣');
-            console.log('║                                                            ║');
-            console.log('║  If your train model faces SIDEWAYS (across the track)     ║');
-            console.log('║  instead of ALONG the track, the model uses a different    ║');
-            console.log('║  "forward" axis than expected.                             ║');
-            console.log('║                                                            ║');
-            console.log('║  Try these commands to fix it:                             ║');
-            console.log('║                                                            ║');
-            console.log('║    window.setTrainOrientation("POS_Z")  // Default         ║');
-            console.log('║    window.setTrainOrientation("NEG_Y")  // Blender         ║');
-            console.log('║    window.setTrainOrientation("POS_X")  // Some CAD        ║');
-            console.log('║    window.setTrainOrientation("NEG_X")                     ║');
-            console.log('║    window.setTrainOrientation("POS_Y")  // 3ds Max         ║');
-            console.log('║    window.setTrainOrientation("NEG_Z")                     ║');
-            console.log('║                                                            ║');
-            console.log('║  After setting, place a NEW train on the track to test.   ║');
-            console.log('║  The setting persists until you refresh the page.         ║');
-            console.log('║                                                            ║');
-            console.log('╚════════════════════════════════════════════════════════════╝');
-            console.log('');
-            console.log(`Current setting: ${placer.getModelForwardAxis()}`);
-            console.log('');
-        };
-
-        console.log(`${LOG_PREFIX} ✓ Orientation utilities registered`);
-        console.log(`${LOG_PREFIX}   Type window.trainOrientationHelp() for help`);
-    }
-
-    // ========================================================================
-    // WORLD OUTLINER INTEGRATION
-    // ========================================================================
-
-    /**
-     * Connect to the WorldOutliner for scene hierarchy integration
-     * 
-     * This enables:
-     * - Models appearing in the outliner when placed
-     * - Deleting from outliner removes the 3D model
-     * - Two-way synchronization
-     * 
-     * @param outliner - WorldOutliner instance
-     */
-    setWorldOutliner(outliner: WorldOutliner): void {
-        if (this.worldOutliner) {
-            // Remove previous callback if any
-            if (this.boundDeleteCallback) {
-                this.worldOutliner.removeOnNodeDelete(this.boundDeleteCallback);
-            }
-        }
-
-        this.worldOutliner = outliner;
-
-        // Setup callback for when nodes are deleted from the outliner
-        this.setupOutlinerDeleteCallback();
-
-        console.log(`${LOG_PREFIX} ✓ WorldOutliner connected - models will appear in outliner`);
-    }
-
-    /**
-     * Setup callback to handle deletion from the WorldOutliner
-     * When a model is deleted in the outliner, we need to remove it from ModelSystem too
-     */
-    private setupOutlinerDeleteCallback(): void {
-        if (!this.worldOutliner) return;
-
-        this.boundDeleteCallback = (nodeId: string, sceneObjectId: string | null, metadata: Record<string, unknown>) => {
-            // Check if this is a model we're tracking
-            const placedModelId = metadata.placedModelId as string | undefined;
-
-            if (placedModelId && this.modelSystem) {
-                console.log(`${LOG_PREFIX} Outliner deleted node, removing model: ${placedModelId}`);
-
-                // Unregister from scaling system first
-                this.unregisterModelFromScaling(placedModelId);
-
-                // Remove from ModelSystem (this disposes the 3D meshes)
-                // Note: The WorldOutliner already disposed the scene objects, 
-                // so we just need to clean up our internal tracking
-                try {
-                    // Check if the model still exists in our system
-                    const model = this.modelSystem.getPlacedModel(placedModelId);
-                    if (model) {
-                        // The WorldOutliner has already disposed the meshes,
-                        // so we just need to remove from our tracking
-                        this.modelSystem.removeModelFromTracking(placedModelId);
-                        console.log(`${LOG_PREFIX} ✓ Cleaned up model tracking: ${placedModelId}`);
-                    }
-                } catch (error) {
-                    console.warn(`${LOG_PREFIX} Error cleaning up model: ${error}`);
-                }
-            }
-        };
-
-        this.worldOutliner.onNodeDelete(this.boundDeleteCallback);
-        console.log(`${LOG_PREFIX} ✓ Outliner delete callback registered`);
-    }
-
-    /**
-     * Register a placed model with the WorldOutliner
-     * 
-     * @param placedModel - The placed model instance
-     * @param libraryEntry - Library entry for the model
-     * @param category - Model category
-     */
-    private registerWithOutliner(
-        placedModel: PlacedModel,
-        libraryEntry: ModelLibraryEntry,
-        category: string
-    ): void {
-        if (!this.worldOutliner) {
-            console.warn(`${LOG_PREFIX} WorldOutliner not connected - model not registered`);
-            return;
-        }
-
-        try {
-            // Determine the outliner node type
-            const nodeType = CATEGORY_TO_OUTLINER_TYPE[category.toLowerCase()] || 'scenery';
-
-            // Get the scene object ID from the root node
-            const sceneObjectId = placedModel.rootNode.uniqueId.toString();
-
-            // Create the outliner item
-            const nodeId = this.worldOutliner.createItem({
-                name: libraryEntry.name,
-                type: nodeType as Exclude<OutlinerNodeType, 'folder'>,
-                sceneObjectId: sceneObjectId,
-                parentId: null, // Auto-group to category folder
-                transform: {
-                    position: {
-                        x: placedModel.position.x,
-                        y: placedModel.position.y,
-                        z: placedModel.position.z
-                    },
-                    rotation: { x: 0, y: 0, z: 0, w: 1 },
-                    scale: {
-                        x: placedModel.scale,
-                        y: placedModel.scale,
-                        z: placedModel.scale
-                    }
-                },
-                metadata: {
-                    libraryId: libraryEntry.id,
-                    placedModelId: placedModel.id,
-                    category: category,
-                    fileName: libraryEntry.fileName,
-                    scaleFactor: placedModel.scale,
-                    scalePreset: placedModel.scalePreset
-                }
-            });
-
-            // Store the outliner node ID in the model's root node metadata for later retrieval
-            if (placedModel.rootNode.metadata) {
-                placedModel.rootNode.metadata.outlinerNodeId = nodeId;
-            } else {
-                placedModel.rootNode.metadata = { outlinerNodeId: nodeId };
-            }
-
-            console.log(`${LOG_PREFIX} ✓ Registered "${libraryEntry.name}" with outliner (node: ${nodeId})`);
-        } catch (error) {
-            console.error(`${LOG_PREFIX} Error registering with outliner:`, error);
-        }
-    }
-
-    /**
-     * Remove a placed model from the WorldOutliner
-     * Called when a model is deleted via keyboard shortcut
-     * 
-     * @param placedModel - The placed model to remove
-     */
-    private unregisterFromOutliner(placedModel: PlacedModel): void {
-        if (!this.worldOutliner) return;
-
-        try {
-            // Get the outliner node ID from the model's metadata
-            const nodeId = placedModel.rootNode.metadata?.outlinerNodeId as string | undefined;
-
-            if (nodeId) {
-                // Delete from outliner (this will NOT trigger our delete callback since we're removing it)
-                // We need to prevent the callback from firing to avoid double-deletion
-                this.worldOutliner.deleteNode(nodeId);
-                console.log(`${LOG_PREFIX} Unregistered model from outliner: ${nodeId}`);
-            }
-        } catch (error) {
-            console.error(`${LOG_PREFIX} Error unregistering from outliner:`, error);
-        }
+        this.statusDisplay.textContent = `Library: ${libraryCount} | Placed: ${placedCount}`;
     }
 
     // ========================================================================
@@ -794,22 +418,8 @@ export class ModelImportButton {
 
     /**
      * Setup keyboard shortcuts for model manipulation
-     * 
-     * [ = Rotate left -5°
-     * ] = Rotate right +5°
-     * Shift + [ = Rotate left -22.5°
-     * Shift + ] = Rotate right +22.5°
-     * Delete = Remove selected model
-     * Escape = Deselect model
-     * 
-     * Note: Scale controls (S, R, L) are handled by ScaleManager
-     * Note: Track rotation has priority - if a track piece is selected,
-     * App.ts handles the rotation instead.
      */
     private setupKeyboardShortcuts(): void {
-        // ----------------------------------------------------------------
-        // Keydown handler
-        // ----------------------------------------------------------------
         window.addEventListener('keydown', (event: KeyboardEvent) => {
             // Skip if typing in an input field
             if (event.target instanceof HTMLInputElement ||
@@ -818,157 +428,164 @@ export class ModelImportButton {
                 return;
             }
 
-            // Skip if no model system or in track placement mode
+            // Skip if model system not ready
             if (!this.modelSystem) return;
+
+            // Skip if in track placement mode
             if (this.trackPlacer?.isInPlacementMode()) return;
 
-            // Check if a track piece is selected - if so, let App.ts handle rotation
-            // This is done by checking for the 'trackPieceSelected' custom property
-            // or by checking if the InputManager has a selected piece
+            // Skip if track piece is selected
             const trackSelected = (window as any).__trackPieceSelected === true;
 
+            // Get selected model
             const selectedModel = this.modelSystem.getSelectedModel();
 
             switch (event.key) {
-                case 'h':
-                case 'H':
-                    // Track H key for height adjustment via scroll
-                    if (!event.repeat) {
-                        this.heightKeyHeld = true;
-                    }
-                    break;
-
-                case 'PageUp':
-                    // Raise model height
-                    if (selectedModel && !trackSelected) {
-                        event.preventDefault();
-                        const step = event.shiftKey ? 1 : 5; // 1mm fine, 5mm normal
-                        this.sidebarScaleControls?.adjustHeight(step);
-                        console.log(`${LOG_PREFIX} Height +${step}mm`);
-                    }
-                    break;
-
-                case 'PageDown':
-                    // Lower model height
-                    if (selectedModel && !trackSelected) {
-                        event.preventDefault();
-                        const step = event.shiftKey ? -1 : -5; // 1mm fine, 5mm normal
-                        this.sidebarScaleControls?.adjustHeight(step);
-                        console.log(`${LOG_PREFIX} Height ${step}mm`);
-                    }
-                    break;
-
+                // Rotate left
                 case '[':
-                    // Rotate left - only if model selected AND no track selected
                     if (selectedModel && !trackSelected) {
                         event.preventDefault();
-                        const angle = event.shiftKey ? -LARGE_ROTATION_DEG : -SMALL_ROTATION_DEG;
+                        const angle = event.shiftKey ? -22.5 : -5;
                         this.modelSystem.rotateModel(selectedModel.id, angle);
-                        console.log(`${LOG_PREFIX} Rotated model ${angle}°`);
                     }
                     break;
 
+                // Rotate right
                 case ']':
-                    // Rotate right - only if model selected AND no track selected
                     if (selectedModel && !trackSelected) {
                         event.preventDefault();
-                        const angle = event.shiftKey ? LARGE_ROTATION_DEG : SMALL_ROTATION_DEG;
+                        const angle = event.shiftKey ? 22.5 : 5;
                         this.modelSystem.rotateModel(selectedModel.id, angle);
-                        console.log(`${LOG_PREFIX} Rotated model ${angle}°`);
                     }
                     break;
 
+                // Delete selected model
                 case 'Delete':
                 case 'Backspace':
-                    // Delete selected model (Backspace as alternative for Mac)
-                    // Only if no track is selected
-                    if (selectedModel && !trackSelected && !event.metaKey && !event.ctrlKey) {
+                    if (selectedModel && !trackSelected) {
                         event.preventDefault();
-                        const modelName = this.library.getModel(selectedModel.libraryId)?.name || selectedModel.id;
-
-                        // Unregister from scaling system first
-                        this.unregisterModelFromScaling(selectedModel.id);
-
-                        // Remove height offset
-                        this.modelHeightOffsets.delete(selectedModel.id);
-
-                        // Unregister from outliner
-                        this.unregisterFromOutliner(selectedModel);
-
-                        // Deselect from scale manager (hides gizmo)
-                        this.scaleManager?.deselectObject();
-
-                        // Notify SidebarScaleControls
-                        this.sidebarScaleControls?.onObjectDeselected();
-
-                        // Then remove the model
-                        this.modelSystem.removeModel(selectedModel.id);
-                        console.log(`${LOG_PREFIX} Deleted model: ${modelName}`);
+                        this.deleteModel(selectedModel.id);
                     }
                     break;
 
+                // Deselect
                 case 'Escape':
-                    // Deselect model
                     if (selectedModel) {
                         event.preventDefault();
                         this.modelSystem.deselectModel();
+                        (window as any).__modelSelected = false;
 
-                        // Also deselect from scale manager (hides gizmo)
-                        this.scaleManager?.deselectObject();
+                        // Deselect from ScaleManager (hides gizmo)
+                        if (this.scaleManager) {
+                            this.scaleManager.deselectObject();
+                        }
 
                         // Notify SidebarScaleControls
                         this.sidebarScaleControls?.onObjectDeselected();
+                    }
+                    break;
 
-                        (window as any).__modelSelected = false;
-                        console.log(`${LOG_PREFIX} Deselected model`);
+                // Height adjustment - Page Up
+                case 'PageUp':
+                    if (selectedModel && !trackSelected) {
+                        event.preventDefault();
+                        const step = event.shiftKey ? 1 : 5;
+                        this.sidebarScaleControls?.adjustHeight(step);
+                    }
+                    break;
+
+                // Height adjustment - Page Down
+                case 'PageDown':
+                    if (selectedModel && !trackSelected) {
+                        event.preventDefault();
+                        const step = event.shiftKey ? -1 : -5;
+                        this.sidebarScaleControls?.adjustHeight(step);
+                    }
+                    break;
+
+                // Reset scale
+                case 'r':
+                case 'R':
+                    // Only reset if not a shortcut conflict (e.g., train reverse)
+                    // Check if a train is selected for driving
+                    if ((window as any).__trainSelected) {
+                        // Let TrainSystem handle 'R' for reverse
+                        return;
+                    }
+                    if (selectedModel && !trackSelected && this.scaleManager) {
+                        event.preventDefault();
+                        this.scaleManager.resetScale(selectedModel.id);
+                    }
+                    break;
+
+                // Lock/unlock scale
+                case 'l':
+                case 'L':
+                    if (selectedModel && !trackSelected && this.scaleManager) {
+                        event.preventDefault();
+                        this.scaleManager.toggleScaleLock(selectedModel.id);
                     }
                     break;
             }
         });
 
-        // ----------------------------------------------------------------
-        // Keyup handler - for tracking H key release
-        // ----------------------------------------------------------------
-        window.addEventListener('keyup', (event: KeyboardEvent) => {
-            if (event.key === 'h' || event.key === 'H') {
-                this.heightKeyHeld = false;
-            }
-        });
-
-        // ----------------------------------------------------------------
-        // Wheel handler - for H+scroll height adjustment
-        // ----------------------------------------------------------------
+        // Handle scroll wheel for scaling and height when S or H is held
         window.addEventListener('wheel', (event: WheelEvent) => {
-            // Only handle if H key is held and we have a selected model
-            if (!this.heightKeyHeld) return;
-            if (!this.modelSystem) return;
-
-            const selectedModel = this.modelSystem.getSelectedModel();
+            const selectedModel = this.modelSystem?.getSelectedModel();
             if (!selectedModel) return;
 
-            // Prevent default scrolling
-            event.preventDefault();
+            const trackSelected = (window as any).__trackPieceSelected === true;
+            if (trackSelected) return;
 
-            // Calculate height delta (5mm per scroll notch, 1mm with Shift)
-            const sensitivity = event.shiftKey ? 1 : 5;
-            const delta = event.deltaY < 0 ? sensitivity : -sensitivity;
+            // S + Scroll = Scale
+            if (event.shiftKey === false && this.isKeyHeld('s')) {
+                event.preventDefault();
+                const delta = event.deltaY < 0 ? 0.05 : -0.05;
+                this.scaleManager?.adjustScale(selectedModel.id, delta);
+                return;
+            }
 
-            // Adjust height via sidebar controls
-            this.sidebarScaleControls?.adjustHeight(delta);
+            // Shift + S + Scroll = Fine scale
+            if (event.shiftKey && this.isKeyHeld('s')) {
+                event.preventDefault();
+                const delta = event.deltaY < 0 ? 0.01 : -0.01;
+                this.scaleManager?.adjustScale(selectedModel.id, delta);
+                return;
+            }
 
+            // H + Scroll = Height adjustment
+            if (this.isKeyHeld('h')) {
+                event.preventDefault();
+                const sensitivity = event.shiftKey ? 1 : 5;
+                const delta = event.deltaY < 0 ? sensitivity : -sensitivity;
+                this.sidebarScaleControls?.adjustHeight(delta);
+            }
         }, { passive: false });
 
-        console.log(`${LOG_PREFIX} Keyboard shortcuts configured:`);
-        console.log(`${LOG_PREFIX}   [ / ] = Rotate ±5°`);
-        console.log(`${LOG_PREFIX}   Shift + [ / ] = Rotate ±22.5°`);
-        console.log(`${LOG_PREFIX}   H + Scroll = Adjust height`);
-        console.log(`${LOG_PREFIX}   PageUp/PageDown = Height ±5mm`);
-        console.log(`${LOG_PREFIX}   Shift + PgUp/PgDn = Height ±1mm`);
-        console.log(`${LOG_PREFIX}   Delete = Remove selected`);
-        console.log(`${LOG_PREFIX}   Escape = Deselect`);
-        console.log(`${LOG_PREFIX}   S + Scroll = Scale (handled by ScaleManager)`);
-        console.log(`${LOG_PREFIX}   R = Reset scale (handled by ScaleManager)`);
-        console.log(`${LOG_PREFIX}   L = Lock scale (handled by ScaleManager)`);
+        console.log(`${LOG_PREFIX} Keyboard shortcuts configured`);
+    }
+
+    /** Track which keys are currently held */
+    private heldKeys: Set<string> = new Set();
+
+    /**
+     * Check if a key is currently held
+     */
+    private isKeyHeld(key: string): boolean {
+        return this.heldKeys.has(key.toLowerCase());
+    }
+
+    // Setup key tracking
+    private setupKeyTracking(): void {
+        window.addEventListener('keydown', (e) => {
+            this.heldKeys.add(e.key.toLowerCase());
+        });
+        window.addEventListener('keyup', (e) => {
+            this.heldKeys.delete(e.key.toLowerCase());
+        });
+        window.addEventListener('blur', () => {
+            this.heldKeys.clear();
+        });
     }
 
     // ========================================================================
@@ -978,11 +595,13 @@ export class ModelImportButton {
     /**
      * Setup click-to-select and drag-to-move for placed models
      * 
-     * - Click on a model to select it (highlighted red, gizmo appears)
-     * - Click and drag a selected model to move it
-     * - Click elsewhere to deselect
+     * UPDATED: Now checks for train meshes and defers to TrainSystem
+     * when appropriate (regular click for driving, Shift+click for repositioning)
      */
     private setupModelSelection(): void {
+        // Setup key tracking for held keys
+        this.setupKeyTracking();
+
         // Get the canvas from the scene's engine
         const canvas = this.scene.getEngine().getRenderingCanvas();
         if (!canvas) {
@@ -994,18 +613,54 @@ export class ModelImportButton {
         // Pointer Down - Start selection or drag
         // ----------------------------------------------------------------
         this.boundPointerDown = (event: PointerEvent) => {
+            // Only handle left clicks
             if (event.button !== 0) return;
 
             // Skip if in track placement mode
             if (this.trackPlacer?.isInPlacementMode()) return;
 
-            // Skip if track is selected
+            // Skip if track is selected (window flag set by InputManager)
             const trackSelected = (window as any).__trackPieceSelected === true;
             if (trackSelected) return;
 
+            // Skip if a train was just selected by TrainSystem (for driving)
+            // This flag is set by TrainSystem's handlePointerDown
+            if ((window as any).__trainSelected === true) {
+                console.log(`${LOG_PREFIX} Train selected for driving - skipping model selection`);
+                return;
+            }
+
+            // Store pointer down position for drag detection
             this.pointerDownPos = { x: event.clientX, y: event.clientY };
 
-            // Check if clicking on a model
+            // ----------------------------------------------------------------
+            // NEW: Check if clicking on a train mesh
+            // ----------------------------------------------------------------
+            const pickedMesh = this.pickMeshAtScreenPosition(event.clientX, event.clientY);
+
+            if (pickedMesh) {
+                // Check if this is a train mesh
+                const trainBehavior = getTrainClickBehavior(pickedMesh, event);
+
+                if (trainBehavior.isTrain) {
+                    if (trainBehavior.shouldDrive) {
+                        // Regular click (no Shift) on train
+                        // TrainSystem should have already handled this via scene.onPointerObservable
+                        // But if we somehow got here, defer anyway
+                        console.log(`${LOG_PREFIX} Train clicked (no modifier) - deferring to TrainSystem for driving`);
+                        this.pointerDownPos = null; // Cancel any pending interaction
+                        return;
+                    }
+
+                    // Shift+Click on train - allow repositioning
+                    console.log(`${LOG_PREFIX} Shift+Click on train - entering reposition mode`);
+                    // Continue with normal model selection below
+                }
+            }
+
+            // ----------------------------------------------------------------
+            // Check if clicking on a placed model
+            // ----------------------------------------------------------------
             const pickedModelId = this.pickModelAtPosition(event.clientX, event.clientY);
 
             if (pickedModelId && this.modelSystem) {
@@ -1039,7 +694,7 @@ export class ModelImportButton {
             const trackSelected = (window as any).__trackPieceSelected === true;
             if (trackSelected) return;
 
-            // === IMPORTANT: Don't start model drag if ScaleManager is dragging gizmo ===
+            // Don't start model drag if ScaleManager is dragging gizmo
             if (this.scaleManager?.isDragging()) return;
 
             const selectedModel = this.modelSystem.getSelectedModel();
@@ -1058,7 +713,7 @@ export class ModelImportButton {
                     this.draggedModelId = selectedModel.id;
                     canvas.style.cursor = 'grabbing';
 
-                    // IMPORTANT: Disable camera controls while dragging
+                    // Disable camera controls while dragging
                     this.disableCameraControls();
 
                     console.log(`${LOG_PREFIX} Started dragging model:`, selectedModel.id);
@@ -1104,16 +759,19 @@ export class ModelImportButton {
                 }
             }
 
+            // Reset pointer tracking
             this.pointerDownPos = null;
             this.dragOffset = null;
         };
 
-        // Attach listeners
+        // ----------------------------------------------------------------
+        // Register handlers
+        // ----------------------------------------------------------------
         canvas.addEventListener('pointerdown', this.boundPointerDown);
         canvas.addEventListener('pointermove', this.boundPointerMove);
         canvas.addEventListener('pointerup', this.boundPointerUp);
 
-        // Also stop dragging if pointer leaves canvas
+        // Handle pointer leaving canvas
         canvas.addEventListener('pointerleave', () => {
             if (this.isDraggingModel) {
                 this.isDraggingModel = false;
@@ -1121,39 +779,15 @@ export class ModelImportButton {
                 this.dragOffset = null;
                 canvas.style.cursor = 'default';
                 this.enableCameraControls();
-                console.log(`${LOG_PREFIX} Drag cancelled (left canvas)`);
             }
             this.pointerDownPos = null;
         });
 
-        console.log(`${LOG_PREFIX} Model click-to-select and drag-to-move configured`);
+        console.log(`${LOG_PREFIX} Model selection configured`);
     }
 
     /**
-     * Disable camera controls during model drag
-     */
-    private disableCameraControls(): void {
-        const camera = this.scene.activeCamera;
-        if (camera) {
-            camera.detachControl();
-        }
-    }
-
-    /**
-     * Re-enable camera controls after model drag
-     */
-    private enableCameraControls(): void {
-        const camera = this.scene.activeCamera;
-        const canvas = this.scene.getEngine().getRenderingCanvas();
-        if (camera && canvas) {
-            camera.attachControl(canvas, true);
-        }
-    }
-
-    /**
-     * Handle model dragging
-     * 
-     * FIX: Now uses SURFACE_HEIGHTS.BASEBOARD_TOP for consistent Y positioning
+     * Handle dragging a model
      */
     private handleModelDrag(event: PointerEvent): void {
         if (!this.modelSystem || !this.draggedModelId || !this.dragOffset) return;
@@ -1161,21 +795,21 @@ export class ModelImportButton {
         const model = this.modelSystem.getPlacedModel(this.draggedModelId);
         if (!model) return;
 
-        // Get world position from screen
+        // Get world position under pointer
         const worldPos = this.getWorldPositionFromScreen(event.clientX, event.clientY);
         if (!worldPos) return;
 
-        // Calculate new position (subtract the offset to keep cursor at pick point)
+        // Calculate new position (apply offset)
         const newX = worldPos.x - this.dragOffset.x;
         const newZ = worldPos.z - this.dragOffset.z;
 
-        // Move the model (keep same Y - this preserves the correct placement height)
+        // Move the model (keep same Y - preserves correct placement height)
         this.modelSystem.moveModel(this.draggedModelId, new Vector3(newX, model.position.y, newZ));
     }
 
     /**
      * Handle click on models for selection
-     * Extended to also select/deselect in ScaleManager (shows/hides gizmo)
+     * Extended to check for trains and also select/deselect in ScaleManager
      */
     private handleModelClick(event: PointerEvent): void {
         if (!this.modelSystem) return;
@@ -1188,7 +822,24 @@ export class ModelImportButton {
         const pickResult = this.scene.pick(event.clientX, event.clientY);
 
         if (pickResult?.hit && pickResult.pickedMesh) {
+            // ----------------------------------------------------------------
+            // NEW: Check if this is a train mesh
+            // ----------------------------------------------------------------
+            const trainBehavior = getTrainClickBehavior(pickResult.pickedMesh, event);
+
+            if (trainBehavior.isTrain) {
+                if (!event.shiftKey) {
+                    // Normal click on train - should be handled by TrainSystem
+                    console.log(`${LOG_PREFIX} Train click without Shift - ignoring (TrainSystem handles)`);
+                    return;
+                }
+                // Shift+Click - continue to select for repositioning
+                console.log(`${LOG_PREFIX} Shift+Click on train - selecting for repositioning`);
+            }
+
+            // ----------------------------------------------------------------
             // Check if this mesh belongs to a placed model
+            // ----------------------------------------------------------------
             const placedModelId = this.modelSystem.getPlacedModelIdFromMesh(pickResult.pickedMesh);
 
             if (placedModelId) {
@@ -1196,11 +847,11 @@ export class ModelImportButton {
                 this.modelSystem.selectModel(placedModelId);
                 (window as any).__modelSelected = true;
 
-                // === Select in ScaleManager (shows gizmo) ===
+                // Select in ScaleManager (shows gizmo)
                 if (this.scaleManager && this.scalableAdapters.has(placedModelId)) {
                     this.scaleManager.selectObject(placedModelId);
 
-                    // === Notify SidebarScaleControls with height offset ===
+                    // Notify SidebarScaleControls with height offset
                     const adapter = this.scalableAdapters.get(placedModelId);
                     const heightOffset = this.getModelHeightOffset(placedModelId);
                     if (this.sidebarScaleControls && adapter) {
@@ -1222,12 +873,12 @@ export class ModelImportButton {
                 this.modelSystem.deselectModel();
                 (window as any).__modelSelected = false;
 
-                // === Deselect from ScaleManager (hides gizmo) ===
+                // Deselect from ScaleManager (hides gizmo)
                 if (this.scaleManager) {
                     this.scaleManager.deselectObject();
                 }
 
-                // === Notify SidebarScaleControls ===
+                // Notify SidebarScaleControls
                 this.sidebarScaleControls?.onObjectDeselected();
             }
         } else {
@@ -1235,18 +886,47 @@ export class ModelImportButton {
             this.modelSystem.deselectModel();
             (window as any).__modelSelected = false;
 
-            // === Deselect from ScaleManager (hides gizmo) ===
+            // Deselect from ScaleManager (hides gizmo)
             if (this.scaleManager) {
                 this.scaleManager.deselectObject();
             }
 
-            // === Notify SidebarScaleControls ===
+            // Notify SidebarScaleControls
             this.sidebarScaleControls?.onObjectDeselected();
+        }
+    }
+
+    // ========================================================================
+    // MESH PICKING HELPERS
+    // ========================================================================
+
+    /**
+     * Pick a mesh at screen coordinates
+     * Used for train detection before model detection
+     * 
+     * @param x - Screen X coordinate
+     * @param y - Screen Y coordinate
+     * @returns The picked mesh or null
+     */
+    private pickMeshAtScreenPosition(x: number, y: number): AbstractMesh | null {
+        try {
+            const camera = this.scene.activeCamera;
+            if (!camera) return null;
+
+            const ray = this.scene.createPickingRay(x, y, null, camera);
+            if (!ray) return null;
+
+            const pickResult = this.scene.pickWithRay(ray);
+            return pickResult?.pickedMesh || null;
+        } catch (error) {
+            console.error(`${LOG_PREFIX} Error picking mesh:`, error);
+            return null;
         }
     }
 
     /**
      * Pick a model at screen position
+     * Returns the placed model ID if a model was clicked
      */
     private pickModelAtPosition(x: number, y: number): string | null {
         if (!this.modelSystem) return null;
@@ -1260,9 +940,7 @@ export class ModelImportButton {
 
     /**
      * Get world position from screen coordinates
-     * Projects onto the baseboard plane (Y = SURFACE_HEIGHTS.BASEBOARD_TOP)
-     * 
-     * FIX: Now uses SURFACE_HEIGHTS constant for consistent height
+     * Projects onto the baseboard plane
      */
     private getWorldPositionFromScreen(screenX: number, screenY: number): Vector3 | null {
         const camera = this.scene.activeCamera;
@@ -1271,43 +949,111 @@ export class ModelImportButton {
         // Create a ray from the camera through the screen point
         const ray = this.scene.createPickingRay(screenX, screenY, null, camera);
 
-        // ====================================================================
-        // FIX: Use SURFACE_HEIGHTS.BASEBOARD_TOP instead of hardcoded value
-        // This ensures consistent height across all placement operations
-        // ====================================================================
-        const boardTopY = SURFACE_HEIGHTS.BASEBOARD_TOP;
-        const t = (boardTopY - ray.origin.y) / ray.direction.y;
+        // Intersect with baseboard plane (Y = BASEBOARD_TOP)
+        const planeY = SURFACE_HEIGHTS.BASEBOARD_TOP;
 
-        if (t > 0) {
-            return new Vector3(
-                ray.origin.x + ray.direction.x * t,
-                boardTopY,
-                ray.origin.z + ray.direction.z * t
-            );
+        if (Math.abs(ray.direction.y) < 0.0001) {
+            return null; // Ray parallel to plane
         }
 
-        return null;
+        const t = (planeY - ray.origin.y) / ray.direction.y;
+        if (t < 0) {
+            return null; // Intersection behind camera
+        }
+
+        return ray.origin.add(ray.direction.scale(t));
     }
 
     // ========================================================================
-    // STATUS DISPLAY (UI)
+    // CAMERA CONTROL HELPERS
     // ========================================================================
 
     /**
-     * Update the status display with current model count
+     * Disable camera controls during drag
      */
-    private updateStatusDisplay(): void {
-        if (!this.statusDisplay) return;
-
-        const count = this.library.getAll().length;
-        const used = this.library.getAll().filter(m => m.isUsed).length;
-
-        if (count > 0) {
-            this.statusDisplay.textContent = `Models: ${used}/${count} placed`;
-            this.statusDisplay.style.display = 'block';
-        } else {
-            this.statusDisplay.style.display = 'none';
+    private disableCameraControls(): void {
+        const camera = this.scene.activeCamera as any;
+        if (camera) {
+            if (camera.inputs?.attached?.pointers) {
+                camera.inputs.attached.pointers.detachControl();
+            }
+            camera.attachControl(this.scene.getEngine().getRenderingCanvas(), false);
         }
+    }
+
+    /**
+     * Enable camera controls after drag
+     */
+    private enableCameraControls(): void {
+        const camera = this.scene.activeCamera as any;
+        if (camera) {
+            camera.attachControl(this.scene.getEngine().getRenderingCanvas(), true);
+        }
+    }
+
+    // ========================================================================
+    // MODEL HEIGHT OFFSET
+    // ========================================================================
+
+    /**
+     * Get the height offset for a model
+     */
+    private getModelHeightOffset(modelId: string): number {
+        return this.modelHeightOffsets.get(modelId) || 0;
+    }
+
+    /**
+     * Set the height offset for a model
+     */
+    private setModelHeightOffset(modelId: string, heightOffset: number): void {
+        this.modelHeightOffsets.set(modelId, heightOffset);
+
+        // Apply to the model
+        const model = this.modelSystem?.getPlacedModel(modelId);
+        if (model && this.modelSystem) {
+            const baseY = SURFACE_HEIGHTS.BASEBOARD_TOP;
+            const newY = baseY + (heightOffset / 1000); // Convert mm to meters
+            this.modelSystem.moveModel(modelId, new Vector3(model.position.x, newY, model.position.z));
+        }
+    }
+
+    // ========================================================================
+    // MODEL DELETION
+    // ========================================================================
+
+    /**
+     * Delete a model and clean up all associated resources
+     */
+    private deleteModel(modelId: string): void {
+        console.log(`${LOG_PREFIX} Deleting model: ${modelId}`);
+
+        // Remove from ScaleManager
+        if (this.scaleManager) {
+            this.scaleManager.deselectObject();
+            this.scaleManager.unregisterObject(modelId);
+        }
+
+        // Remove adapter
+        this.scalableAdapters.delete(modelId);
+
+        // Remove height offset
+        this.modelHeightOffsets.delete(modelId);
+
+        // Remove from outliner
+        if (this.worldOutliner) {
+            this.worldOutliner.removeNode(modelId);
+        }
+
+        // Remove from model system
+        if (this.modelSystem) {
+            this.modelSystem.removeModel(modelId);
+        }
+
+        // Notify SidebarScaleControls
+        this.sidebarScaleControls?.onObjectDeselected();
+
+        // Update status display
+        this.updateStatusDisplay();
     }
 
     // ========================================================================
@@ -1316,312 +1062,268 @@ export class ModelImportButton {
 
     /**
      * Show the import dialog
-     * Called when the import button is clicked (from sidebar or floating button)
-     */
-    showImportDialog(): void {
-        // Guard: Ensure ModelSystem is initialized
-        if (!this.modelSystem) {
-            console.error(`${LOG_PREFIX} Cannot open import dialog - ModelSystem not initialized`);
-            return;
-        }
-
-        console.log(`${LOG_PREFIX} Opening import dialog...`);
-
-        // Create and show the dialog with scene and modelSystem
-        const dialog = new ModelImportDialog(this.scene, this.modelSystem);
-
-        dialog.show((result) => {
-            if (result) {
-                console.log(`${LOG_PREFIX} ✓ Imported: "${result.name}"`);
-                console.log(`${LOG_PREFIX}   Category: ${result.category}`);
-                console.log(`${LOG_PREFIX}   ID: ${result.id}`);
-
-                // Place the model
-                this.placeModel(result.id);
-            } else {
-                console.log(`${LOG_PREFIX} Import cancelled`);
-            }
-        });
-    }
-
-    // ========================================================================
-    // MODEL PLACEMENT
-    // ========================================================================
-
-    /**
-     * Check if a category requires track placement
-     */
-    private requiresTrackPlacement(category: string): boolean {
-        return TRACK_PLACEMENT_CATEGORIES.includes(category);
-    }
-
-    /**
-     * Place a model from the library
-     * Uses track placement for rolling stock, baseboard for others
-     * Automatically registers with scaling system
-     */
-    private async placeModel(libraryId: string): Promise<void> {
-        if (!this.modelSystem) return;
-
-        const entry = this.library.getModel(libraryId);
-        if (!entry) {
-            console.error(`${LOG_PREFIX} Model not found:`, libraryId);
-            return;
-        }
-
-        console.log(`${LOG_PREFIX} Placing model: "${entry.name}" (${entry.category})`);
-
-        // Check if this model requires track placement
-        if (this.requiresTrackPlacement(entry.category)) {
-            await this.placeOnTrack(entry);
-        } else {
-            await this.placeOnBaseboard(entry);
-        }
-    }
-
-    /**
-     * Place a model on track (for rolling stock)
-     * Automatically places the model centered on the first available track piece
-     */
-    private async placeOnTrack(entry: ModelLibraryEntry): Promise<void> {
-        if (!this.modelSystem || !this.trackPlacer) return;
-
-        // Check if there are any track pieces
-        if (!this.trackPlacer.hasTrackPieces()) {
-            this.showNoTrackWarning();
-            return;
-        }
-
-        console.log(`${LOG_PREFIX} Auto-placing rolling stock on track`);
-
-        // Get default placement (centered on first available track)
-        const result = this.trackPlacer.getDefaultPlacement();
-
-        if (result && result.isValid) {
-            // Place the model at the calculated position
-            const placed = await this.modelSystem!.placeModel(entry, {
-                position: result.position,
-                rotationDeg: result.rotationDegrees
-            });
-
-            if (placed) {
-                console.log(`${LOG_PREFIX} ✓ Placed rolling stock "${entry.name}" on track`);
-                console.log(`${LOG_PREFIX}   Position: (${result.position.x.toFixed(3)}, ${result.position.y.toFixed(3)}, ${result.position.z.toFixed(3)})`);
-                console.log(`${LOG_PREFIX}   Rotation: ${result.rotationDegrees.toFixed(1)}°`);
-
-                // Register with scaling system
-                this.registerModelForScaling(placed, entry.category);
-
-                // Register with WorldOutliner
-                this.registerWithOutliner(placed, entry, entry.category);
-
-                // Select it in ModelSystem
-                this.modelSystem!.selectModel(placed.id);
-
-                // Select in ScaleManager (shows gizmo)
-                if (this.scaleManager) {
-                    this.scaleManager.selectObject(placed.id);
-                }
-
-                // Notify SidebarScaleControls (height offset = 0 for new placement)
-                const adapter = this.scalableAdapters.get(placed.id);
-                if (this.sidebarScaleControls && adapter) {
-                    this.sidebarScaleControls.onObjectSelected(
-                        placed.id,
-                        adapter.currentScale,
-                        adapter.scaleLocked,
-                        0 // New placement, no height offset
-                    );
-                }
-
-                // Mark as used
-                this.library.markAsUsed(entry.id);
-            }
-        } else {
-            console.warn(`${LOG_PREFIX} Could not calculate default placement`);
-            // Fall back to manual placement mode
-            this.startManualTrackPlacement(entry);
-        }
-    }
-
-    /**
-     * Start manual track placement mode (fallback if auto-placement fails)
-     */
-    private startManualTrackPlacement(entry: ModelLibraryEntry): void {
-        if (!this.modelSystem || !this.trackPlacer) return;
-
-        console.log(`${LOG_PREFIX} Starting manual track placement mode for rolling stock`);
-
-        // Start track placement mode
-        this.trackPlacer.startPlacement(async (result) => {
-            if (result && result.isValid) {
-                // Place the model at the calculated position
-                const placed = await this.modelSystem!.placeModel(entry, {
-                    position: result.position,
-                    rotationDeg: result.rotationDegrees
-                });
-
-                if (placed) {
-                    console.log(`${LOG_PREFIX} ✓ Placed rolling stock "${entry.name}" on track`);
-                    console.log(`${LOG_PREFIX}   Position: (${result.position.x.toFixed(3)}, ${result.position.z.toFixed(3)})`);
-                    console.log(`${LOG_PREFIX}   Rotation: ${result.rotationDegrees.toFixed(1)}°`);
-
-                    // Register with scaling system
-                    this.registerModelForScaling(placed, entry.category);
-
-                    // Register with WorldOutliner
-                    this.registerWithOutliner(placed, entry, entry.category);
-
-                    // Select it in ModelSystem
-                    this.modelSystem!.selectModel(placed.id);
-
-                    // Select in ScaleManager (shows gizmo)
-                    if (this.scaleManager) {
-                        this.scaleManager.selectObject(placed.id);
-                    }
-
-                    // Notify SidebarScaleControls (height offset = 0 for new placement)
-                    const adapter = this.scalableAdapters.get(placed.id);
-                    if (this.sidebarScaleControls && adapter) {
-                        this.sidebarScaleControls.onObjectSelected(
-                            placed.id,
-                            adapter.currentScale,
-                            adapter.scaleLocked,
-                            0 // New placement, no height offset
-                        );
-                    }
-
-                    // Mark as used
-                    this.library.markAsUsed(entry.id);
-                }
-            } else {
-                console.log(`${LOG_PREFIX} Track placement cancelled`);
-            }
-        });
-    }
-
-    /**
-     * Place a model on baseboard (for non-rolling stock like buildings, scenery)
      * 
-     * FIX: Now places at SURFACE_HEIGHTS.BASEBOARD_TOP instead of Y=0
-     * This ensures models appear ON the baseboard, not 95cm below it!
+     * After import, the model is:
+     * - Rolling stock → User clicks on track to place (TrackModelPlacer)
+     * - Other categories → Placed directly on baseboard centre
      */
-    private async placeOnBaseboard(entry: ModelLibraryEntry): Promise<void> {
-        if (!this.modelSystem) return;
+    public showImportDialog(): void {
+        if (!this.modelSystem) {
+            console.error(`${LOG_PREFIX} Model system not ready`);
+            return;
+        }
 
-        console.log(`${LOG_PREFIX} Placing model on baseboard at Y=${SURFACE_HEIGHTS.BASEBOARD_TOP}m`);
+        const dialog = new ModelImportDialog(this.scene, this.modelSystem);
+        dialog.show(async (entry) => {
+            if (entry) {
+                console.log(`${LOG_PREFIX} Imported: ${entry.name}`);
+                console.log(`${LOG_PREFIX}   Category: ${entry.category}`);
+                this.updateStatusDisplay();
 
-        // ====================================================================
-        // FIX: Use SURFACE_HEIGHTS.BASEBOARD_TOP for Y position
-        // Previously this was Vector3(0, 0, 0) which placed models at Y=0,
-        // but the baseboard surface is at Y=0.95m!
-        // ====================================================================
-        const placed = await this.modelSystem.placeModel(entry, {
-            position: new Vector3(0, SURFACE_HEIGHTS.BASEBOARD_TOP, 0)
+                // ============================================================
+                // ROLLING STOCK: Click-to-place on track
+                // ============================================================
+                if (entry.category === 'rolling_stock' && this.trackPlacer) {
+                    console.log(`${LOG_PREFIX} 🚂 Rolling stock - click on track to place`);
+
+                    // Start track placement mode - user clicks on track
+                    this.trackPlacer.startPlacement(async (result) => {
+                        if (!result || !this.modelSystem) {
+                            console.log(`${LOG_PREFIX} Placement cancelled`);
+                            return;
+                        }
+
+                        try {
+                            // Place the model on the track
+                            const placedModel = await this.modelSystem.placeModel(entry, {
+                                position: result.position,
+                                rotationDeg: result.rotationDegrees
+                            });
+
+                            if (placedModel) {
+                                console.log(`${LOG_PREFIX} ✓ Placed on track: ${entry.name}`);
+                                console.log(`${LOG_PREFIX}   Position: ${result.position.toString()}`);
+                                console.log(`${LOG_PREFIX}   Rotation: ${result.rotationDegrees.toFixed(1)}°`);
+
+                                // Register with scaling system
+                                this.registerModelForScaling(placedModel, entry.category);
+
+                                // Register with WorldOutliner
+                                this.registerModelWithOutliner(placedModel, entry);
+
+                                // ============================================================
+                                // REGISTER WITH TRAIN SYSTEM FOR DRIVING CONTROLS
+                                // ============================================================
+                                // Rolling stock needs to be registered with TrainSystem
+                                // to enable driving controls (throttle, direction, brake, horn)
+                                this.registerWithTrainSystem(placedModel, entry);
+
+                                // Select it
+                                this.modelSystem.selectModel(placedModel.id);
+                                if (this.scaleManager) {
+                                    this.scaleManager.selectObject(placedModel.id);
+                                }
+                            }
+                        } catch (error) {
+                            console.error(`${LOG_PREFIX} Track placement failed:`, error);
+                        }
+                    });
+                    return;
+                }
+
+                // ============================================================
+                // OTHER CATEGORIES: Place directly on baseboard
+                // ============================================================
+                console.log(`${LOG_PREFIX} 📦 Placing model on baseboard...`);
+
+                try {
+                    // Get baseboard surface position
+                    const boardY = SURFACE_HEIGHTS.BASEBOARD_TOP;
+                    const position = new Vector3(0, boardY, 0);
+
+                    // Place the model
+                    const placedModel = await this.modelSystem.placeModel(entry, { position });
+
+                    if (placedModel) {
+                        console.log(`${LOG_PREFIX} ✓ Placed: ${entry.name}`);
+                        console.log(`${LOG_PREFIX}   Position: ${position.toString()}`);
+
+                        // Register with scaling system
+                        this.registerModelForScaling(placedModel, entry.category);
+
+                        // Register with WorldOutliner
+                        this.registerModelWithOutliner(placedModel, entry);
+
+                        // Select it
+                        this.modelSystem.selectModel(placedModel.id);
+                        if (this.scaleManager) {
+                            this.scaleManager.selectObject(placedModel.id);
+                        }
+                    }
+                } catch (error) {
+                    console.error(`${LOG_PREFIX} Failed to place model:`, error);
+                }
+            }
         });
+    }
 
-        if (placed) {
-            console.log(`${LOG_PREFIX} ✓ Model placed on baseboard`);
-            console.log(`${LOG_PREFIX}   Position: (0, ${SURFACE_HEIGHTS.BASEBOARD_TOP}, 0)`);
-            console.log(`${LOG_PREFIX}   Use mouse to drag, [ / ] to rotate`);
-            console.log(`${LOG_PREFIX}   Use gizmo handles or S+scroll to scale`);
+    /**
+     * Open dialog - alias for external access
+     */
+    public openDialog(): void {
+        this.showImportDialog();
+    }
 
-            // Register with scaling system
-            this.registerModelForScaling(placed, entry.category);
+    // ========================================================================
+    // MODEL REGISTRATION HELPERS
+    // ========================================================================
 
-            // Register with WorldOutliner
-            this.registerWithOutliner(placed, entry, entry.category);
-
-            // Select it in ModelSystem
-            this.modelSystem.selectModel(placed.id);
-
-            // Select in ScaleManager (shows gizmo)
-            if (this.scaleManager) {
-                this.scaleManager.selectObject(placed.id);
+    /**
+     * Register a placed model with the scaling system
+     * Creates a ScalableModelAdapter and registers with ScaleManager
+     * 
+     * @param placedModel - The placed model from ModelSystem
+     * @param category - Model category for scale constraints
+     */
+    private registerModelForScaling(placedModel: PlacedModel, category: string): void {
+        try {
+            if (!this.scaleManager) {
+                console.warn(`${LOG_PREFIX} ScaleManager not available for scaling registration`);
+                return;
             }
 
-            // Notify SidebarScaleControls (height offset = 0 for new placement)
-            const adapter = this.scalableAdapters.get(placed.id);
-            if (this.sidebarScaleControls && adapter) {
-                this.sidebarScaleControls.onObjectSelected(
-                    placed.id,
-                    adapter.currentScale,
-                    adapter.scaleLocked,
-                    0 // New placement, no height offset
-                );
-            }
+            // Map category to scalable asset category
+            const assetCategory = CATEGORY_MAP[category] || 'other';
 
-            // Mark as used
-            this.library.markAsUsed(entry.id);
+            // Create adapter for the model
+            const adapter = new ScalableModelAdapter(
+                placedModel.id,
+                placedModel.rootNode,
+                assetCategory as ScalableAssetCategory
+            );
+
+            // Store adapter reference
+            this.scalableAdapters.set(placedModel.id, adapter);
+
+            // Register with scale manager
+            this.scaleManager.registerScalable(adapter);
+
+            console.log(`${LOG_PREFIX} ✓ Registered for scaling: ${placedModel.id} (${assetCategory})`);
+
+        } catch (error) {
+            console.error(`${LOG_PREFIX} Failed to register for scaling:`, error);
         }
     }
 
     /**
-     * Show warning when no track is available for rolling stock
+     * Register a placed model with the WorldOutliner
+     * Creates an outliner node for the model in the appropriate category folder
+     * 
+     * @param placedModel - The placed model from ModelSystem
+     * @param entry - Library entry with model metadata
      */
-    private showNoTrackWarning(): void {
-        // Create warning modal
-        const overlay = document.createElement('div');
-        overlay.style.cssText = `
-            position: fixed;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            background: rgba(0, 0, 0, 0.5);
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            z-index: 10000;
-        `;
-
-        const modal = document.createElement('div');
-        modal.style.cssText = `
-            background: #2a2a2a;
-            border-radius: 8px;
-            padding: 24px;
-            max-width: 400px;
-            text-align: center;
-            color: #fff;
-            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
-        `;
-
-        modal.innerHTML = `
-            <div style="font-size: 48px; margin-bottom: 16px;">🚂</div>
-            <h3 style="margin: 0 0 12px 0; color: #ffa726;">No Track Available</h3>
-            <p style="margin: 0 0 20px 0; color: #aaa;">
-                Rolling stock (trains) must be placed on track pieces.<br>
-                Please place some track first, then import your train.
-            </p>
-            <button id="no-track-ok-btn" style="
-                background: #4CAF50;
-                color: white;
-                border: none;
-                padding: 10px 24px;
-                border-radius: 4px;
-                cursor: pointer;
-                font-size: 14px;
-            ">OK</button>
-        `;
-
-        overlay.appendChild(modal);
-        document.body.appendChild(overlay);
-
-        // Close handlers
-        const close = () => overlay.remove();
-
-        modal.querySelector('#no-track-ok-btn')?.addEventListener('click', close);
-
-        // Close on overlay click
-        overlay.addEventListener('click', (e) => {
-            if (e.target === overlay) {
-                overlay.remove();
+    private registerModelWithOutliner(placedModel: PlacedModel, entry: ModelLibraryEntry): void {
+        try {
+            if (!this.worldOutliner) {
+                console.warn(`${LOG_PREFIX} WorldOutliner not available for registration`);
+                return;
             }
-        });
+
+            // Determine outliner node type based on category
+            let nodeType: OutlinerNodeType = 'model';
+            if (entry.category === 'rolling_stock') {
+                nodeType = 'rolling_stock';
+            } else if (['scenery', 'buildings', 'vegetation', 'infrastructure'].includes(entry.category)) {
+                nodeType = 'scenery';
+            }
+
+            // Create outliner node
+            this.worldOutliner.createItem(
+                entry.name,
+                nodeType,
+                placedModel.id,  // Scene object ID for bidirectional sync
+                {
+                    libraryId: entry.id,
+                    category: entry.category
+                }
+            );
+
+            console.log(`${LOG_PREFIX} ✓ Registered with outliner: ${entry.name} (${nodeType})`);
+
+        } catch (error) {
+            console.error(`${LOG_PREFIX} Failed to register with outliner:`, error);
+        }
     }
 
     // ========================================================================
-    // PUBLIC METHODS
+    // TRAIN SYSTEM REGISTRATION
+    // ========================================================================
+
+    /**
+     * Register a placed rolling stock model with the TrainSystem
+     * This enables driving controls (throttle, direction, brake, horn)
+     * 
+     * @param placedModel - The placed model instance
+     * @param entry - Library entry with model info
+     */
+    private registerWithTrainSystem(placedModel: PlacedModel, entry: ModelLibraryEntry): void {
+        // Only register rolling stock
+        if (entry.category !== 'rolling_stock') {
+            return;
+        }
+
+        // Use a small delay to ensure the model is fully in the scene
+        setTimeout(() => {
+            try {
+                // Get the global trainSystem reference (set by App.ts)
+                const trainSystem = (window as any).trainSystem;
+
+                if (!trainSystem) {
+                    console.warn(`${LOG_PREFIX} TrainSystem not available - train won't be driveable`);
+                    console.warn(`${LOG_PREFIX}   Tip: Use Shift+T to manually register trains`);
+                    return;
+                }
+
+                console.log(`${LOG_PREFIX} 🚂 Registering with TrainSystem...`);
+
+                // Use registerExistingModel directly with the placed model's root node
+                // This is safer and faster than scanAndRegisterTrains
+                const controller = trainSystem.registerExistingModel(
+                    placedModel.rootNode,
+                    entry.name,
+                    undefined,  // Let it auto-find the edge
+                    0.5         // Middle of edge
+                );
+
+                if (controller) {
+                    console.log(`${LOG_PREFIX} ✓ Registered as driveable train`);
+                    console.log(`${LOG_PREFIX}   Click to select, use Arrow keys/WASD to drive`);
+                } else {
+                    console.warn(`${LOG_PREFIX} TrainSystem returned no controller`);
+                    console.log(`${LOG_PREFIX}   Tip: Use Shift+T to manually register trains`);
+                }
+
+            } catch (error) {
+                console.warn(`${LOG_PREFIX} Train registration failed:`, error);
+                console.log(`${LOG_PREFIX}   Tip: Use Shift+T to manually register trains`);
+            }
+        }, 100);
+    }
+
+    // ========================================================================
+    // WORLD OUTLINER INTEGRATION
+    // ========================================================================
+
+    /**
+     * Set the WorldOutliner for bidirectional sync
+     */
+    setWorldOutliner(outliner: WorldOutliner): void {
+        this.worldOutliner = outliner;
+        console.log(`${LOG_PREFIX} WorldOutliner connected`);
+    }
+
+    // ========================================================================
+    // PUBLIC ACCESSORS
     // ========================================================================
 
     /**
@@ -1647,15 +1349,6 @@ export class ModelImportButton {
 
     /**
      * Get the sidebar scale controls element for UIManager integration
-     * 
-     * Add this element to UIManager settings section:
-     * @example
-     * ```typescript
-     * const scaleElement = modelImportButton.getScaleControlsElement();
-     * if (scaleElement) {
-     *     settingsContent.appendChild(scaleElement);
-     * }
-     * ```
      */
     getScaleControlsElement(): HTMLElement | null {
         return this.sidebarScaleControls?.getElement() || null;
@@ -1673,7 +1366,7 @@ export class ModelImportButton {
      */
     setVisible(visible: boolean): void {
         if (this.button) {
-            this.button.style.display = 'none';
+            this.button.style.display = 'none'; // Always hidden - use sidebar
         }
         if (this.statusDisplay) {
             this.statusDisplay.style.display = visible ? 'block' : 'none';
@@ -1681,71 +1374,14 @@ export class ModelImportButton {
     }
 
     // ========================================================================
-    // CLEANUP
+    // DISPOSAL
     // ========================================================================
 
     /**
-     * Dispose of resources
+     * Clean up all resources
      */
     dispose(): void {
         console.log(`${LOG_PREFIX} Disposing...`);
-
-        // ----------------------------------------------------------------
-        // Clean up window orientation utilities
-        // ----------------------------------------------------------------
-        delete (window as any).setTrainOrientation;
-        delete (window as any).getTrainOrientation;
-        delete (window as any).trainOrientationHelp;
-        delete (window as any).testTrainOrientation;
-
-        // ----------------------------------------------------------------
-        // Remove outliner delete callback
-        // ----------------------------------------------------------------
-        if (this.worldOutliner && this.boundDeleteCallback) {
-            this.worldOutliner.removeOnNodeDelete(this.boundDeleteCallback);
-            this.boundDeleteCallback = null;
-        }
-        this.worldOutliner = null;
-
-        // ----------------------------------------------------------------
-        // Dispose Sidebar Scale Controls
-        // ----------------------------------------------------------------
-        if (this.sidebarScaleControls) {
-            this.sidebarScaleControls.dispose();
-            this.sidebarScaleControls = null;
-        }
-
-        // ----------------------------------------------------------------
-        // Dispose Scale Manager
-        // ----------------------------------------------------------------
-        if (this.scaleManager) {
-            this.scaleManager.dispose();
-            this.scaleManager = null;
-        }
-
-        // ----------------------------------------------------------------
-        // Clear scalable adapters
-        // ----------------------------------------------------------------
-        this.scalableAdapters.clear();
-
-        // ----------------------------------------------------------------
-        // Remove event listeners for model selection and dragging
-        // ----------------------------------------------------------------
-        const canvas = this.scene.getEngine().getRenderingCanvas();
-        if (canvas) {
-            if (this.boundPointerDown) {
-                canvas.removeEventListener('pointerdown', this.boundPointerDown);
-                this.boundPointerDown = null;
-            }
-            if (this.boundPointerMove) {
-                canvas.removeEventListener('pointermove', this.boundPointerMove);
-                this.boundPointerMove = null;
-            }
-            if (this.boundPointerUp) {
-                canvas.removeEventListener('pointerup', this.boundPointerUp);
-                this.boundPointerUp = null;
-            }
-        }
 
         // ----------------------------------------------------------------
         // Clear drag state

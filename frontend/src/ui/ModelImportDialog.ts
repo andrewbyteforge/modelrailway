@@ -10,48 +10,34 @@
  * - Setting category and tags
  * - Saving to library
  * 
+ * FIXED: Category card click handlers now work properly (v1.1.0)
+ * 
  * @module ModelImportDialog
  * @author Model Railway Workbench
- * @version 1.0.0
+ * @version 1.1.0 - Fixed category selection
  */
 
 import { Scene } from '@babylonjs/core/scene';
-import { ModelLibrary, type ModelCategory, type ModelLibraryEntry, type ModelScalePreset } from '../systems/models/ModelLibrary';
-import { ModelScaleHelper, REFERENCE_DIMENSIONS, OO_GAUGE, type ModelDimensions, type ScaleResult } from '../systems/models/ModelScaleHelper';
+import { ModelLibrary, type ModelCategory, type ModelLibraryEntry } from '../systems/models/ModelLibrary';
+import { ModelScaleHelper, type ModelDimensions, type ScaleResult } from '../systems/models/ModelScaleHelper';
 import { ModelSystem, type ModelLoadResult } from '../systems/models/ModelSystem';
+import {
+    type ScaleMode,
+    type ImportCallback,
+    type ImportFormState,
+    type RollingStockSubcategory,
+    DIALOG_Z_INDEX,
+    buildDialogHTML,
+    getOverlayStyles,
+    getContainerStyles,
+    createDefaultFormState,
+    detectRollingStock,
+    detectRollingStockType,
+    attachCategoryHandlers
+} from './ModelImportDialogTemplate';
 
-// ============================================================================
-// CONSTANTS
-// ============================================================================
-
-/** Dialog z-index */
-const DIALOG_Z_INDEX = 2000;
-
-/** Category options */
-const CATEGORIES: { value: ModelCategory; label: string }[] = [
-    { value: 'buildings', label: '🏠 Buildings' },
-    { value: 'rolling_stock', label: '🚃 Rolling Stock' },
-    { value: 'scenery', label: '🌳 Scenery' },
-    { value: 'infrastructure', label: '🌉 Infrastructure' },
-    { value: 'vehicles', label: '🚗 Vehicles' },
-    { value: 'figures', label: '👤 Figures' },
-    { value: 'accessories', label: '🪑 Accessories' },
-    { value: 'custom', label: '📦 Custom' }
-];
-
-// ============================================================================
-// TYPE DEFINITIONS
-// ============================================================================
-
-/**
- * Scaling mode for import
- */
-type ScaleMode = 'realWorld' | 'reference' | 'direct' | 'asIs';
-
-/**
- * Import result callback
- */
-export type ImportCallback = (entry: ModelLibraryEntry | null) => void;
+// Re-export types for external use
+export type { ImportCallback };
 
 // ============================================================================
 // MODEL IMPORT DIALOG CLASS
@@ -104,18 +90,8 @@ export class ModelImportDialog {
     /** Import callback */
     private onImport: ImportCallback | null = null;
 
-    // Form state
-    private formState = {
-        name: '',
-        description: '',
-        category: 'custom' as ModelCategory,
-        tags: [] as string[],
-        scaleMode: 'realWorld' as ScaleMode,
-        realWorldValue: 10,
-        realWorldAxis: 'height' as 'height' | 'width' | 'depth',
-        referenceKey: 'figure',
-        directScale: 1
-    };
+    /** Form state */
+    private formState: ImportFormState;
 
     // ========================================================================
     // CONSTRUCTOR
@@ -130,6 +106,7 @@ export class ModelImportDialog {
         this.scene = scene;
         this.modelSystem = modelSystem;
         this.library = ModelLibrary.getInstance();
+        this.formState = createDefaultFormState();
     }
 
     // ========================================================================
@@ -142,6 +119,7 @@ export class ModelImportDialog {
      */
     show(callback: ImportCallback): void {
         this.onImport = callback;
+        this.formState = createDefaultFormState(); // Reset form state
         this.createDialog();
     }
 
@@ -186,457 +164,25 @@ export class ModelImportDialog {
     private createDialog(): void {
         // Create overlay
         this.overlay = document.createElement('div');
-        this.overlay.style.cssText = `
-            position: fixed;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            background: rgba(0, 0, 0, 0.5);
-            z-index: ${DIALOG_Z_INDEX - 1};
-        `;
+        this.overlay.style.cssText = getOverlayStyles();
         this.overlay.addEventListener('click', () => this.close());
         document.body.appendChild(this.overlay);
 
         // Create dialog container
         this.container = document.createElement('div');
-        this.container.style.cssText = `
-            position: fixed;
-            top: 50%;
-            left: 50%;
-            transform: translate(-50%, -50%);
-            width: 600px;
-            max-width: 90vw;
-            max-height: 90vh;
-            overflow-y: auto;
-            background: white;
-            border-radius: 12px;
-            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
-            z-index: ${DIALOG_Z_INDEX};
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-        `;
+        this.container.style.cssText = getContainerStyles();
         this.container.addEventListener('click', e => e.stopPropagation());
 
-        // Build dialog content
-        this.container.innerHTML = this.buildDialogHTML();
+        // Build dialog content from template
+        this.container.innerHTML = buildDialogHTML();
 
         // Add to DOM
         document.body.appendChild(this.container);
 
         // Attach event handlers
         this.attachEventHandlers();
-    }
 
-    /**
-     * Build the dialog HTML content
-     */
-    private buildDialogHTML(): string {
-        return `
-            <!-- Header -->
-            <div style="
-                padding: 20px;
-                background: linear-gradient(135deg, #2c3e50, #3498db);
-                border-radius: 12px 12px 0 0;
-                color: white;
-            ">
-                <h2 style="margin: 0; font-size: 20px; display: flex; align-items: center; gap: 10px;">
-                    📦 Import 3D Model
-                </h2>
-                <p style="margin: 8px 0 0 0; opacity: 0.9; font-size: 13px;">
-                    Import GLB/GLTF models and configure them for OO gauge scale (1:76.2)
-                </p>
-            </div>
-            
-            <!-- Content -->
-            <div style="padding: 20px;">
-                
-                <!-- File Selection -->
-                <div class="section" style="margin-bottom: 20px;">
-                    <h3 style="margin: 0 0 12px 0; font-size: 14px; color: #333;">
-                        1. Select Model File
-                    </h3>
-                    <div style="
-                        border: 2px dashed #ccc;
-                        border-radius: 8px;
-                        padding: 30px;
-                        text-align: center;
-                        background: #f9f9f9;
-                        cursor: pointer;
-                        transition: all 0.2s;
-                    " id="dropZone">
-                        <input type="file" 
-                               id="fileInput" 
-                               accept=".glb,.gltf" 
-                               style="display: none;">
-                        <div id="dropZoneContent">
-                            <div style="font-size: 40px; margin-bottom: 10px;">📁</div>
-                            <p style="margin: 0; color: #666;">
-                                <strong>Click to browse</strong> or drag & drop<br>
-                                <span style="font-size: 12px; color: #999;">
-                                    Supports .glb and .gltf files
-                                </span>
-                            </p>
-                        </div>
-                    </div>
-                    <div id="fileInfo" style="display: none; margin-top: 10px; padding: 12px; background: #e8f5e9; border-radius: 6px;">
-                        <!-- File info will be inserted here -->
-                    </div>
-                </div>
-                
-                <!-- Model Details (shown after file selected) -->
-                <div id="modelDetailsSection" style="display: none;">
-                    
-                    <!-- Basic Info -->
-                    <div class="section" style="margin-bottom: 20px;">
-                        <h3 style="margin: 0 0 12px 0; font-size: 14px; color: #333;">
-                            2. Model Details
-                        </h3>
-                        <div style="display: grid; gap: 12px;">
-                            <div>
-                                <label style="display: block; font-size: 12px; color: #666; margin-bottom: 4px;">
-                                    Name *
-                                </label>
-                                <input type="text" 
-                                       id="modelName" 
-                                       placeholder="e.g., Victorian Station Building"
-                                       style="
-                                           width: 100%;
-                                           padding: 10px;
-                                           border: 1px solid #ddd;
-                                           border-radius: 6px;
-                                           font-size: 14px;
-                                           box-sizing: border-box;
-                                       ">
-                            </div>
-                            <div>
-                                <label style="display: block; font-size: 12px; color: #666; margin-bottom: 4px;">
-                                    Description
-                                </label>
-                                <textarea id="modelDescription" 
-                                          rows="2"
-                                          placeholder="Optional description..."
-                                          style="
-                                              width: 100%;
-                                              padding: 10px;
-                                              border: 1px solid #ddd;
-                                              border-radius: 6px;
-                                              font-size: 14px;
-                                              resize: vertical;
-                                              box-sizing: border-box;
-                                          "></textarea>
-                            </div>
-                            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
-                                <div>
-                                    <label style="display: block; font-size: 12px; color: #666; margin-bottom: 4px;">
-                                        Category *
-                                    </label>
-                                    <select id="modelCategory" style="
-                                        width: 100%;
-                                        padding: 10px;
-                                        border: 1px solid #ddd;
-                                        border-radius: 6px;
-                                        font-size: 14px;
-                                        background: white;
-                                    ">
-                                        ${CATEGORIES.map(c =>
-            `<option value="${c.value}">${c.label}</option>`
-        ).join('')}
-                                    </select>
-                                </div>
-                                <div>
-                                    <label style="display: block; font-size: 12px; color: #666; margin-bottom: 4px;">
-                                        Tags (comma separated)
-                                    </label>
-                                    <input type="text" 
-                                           id="modelTags" 
-                                           placeholder="e.g., station, brick, victorian"
-                                           style="
-                                               width: 100%;
-                                               padding: 10px;
-                                               border: 1px solid #ddd;
-                                               border-radius: 6px;
-                                               font-size: 14px;
-                                               box-sizing: border-box;
-                                           ">
-                                </div>
-                            </div>
-                            
-                            <!-- Rolling Stock Warning -->
-                            <div id="rollingStockWarning" style="
-                                display: none;
-                                margin-top: 12px;
-                                padding: 12px 16px;
-                                background: linear-gradient(135deg, #fff3e0 0%, #ffe0b2 100%);
-                                border: 1px solid #ffb74d;
-                                border-radius: 8px;
-                                border-left: 4px solid #ff9800;
-                            ">
-                                <div style="display: flex; align-items: flex-start; gap: 12px;">
-                                    <span style="font-size: 24px;">🚂</span>
-                                    <div>
-                                        <strong style="display: block; color: #e65100; margin-bottom: 4px;">
-                                            Rolling Stock - Track Placement Required
-                                        </strong>
-                                        <p style="margin: 0; font-size: 13px; color: #5d4037; line-height: 1.4;">
-                                            After import, you will need to click on a track piece to place this model.
-                                            Rolling stock must be placed on track.
-                                        </p>
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                    
-                    <!-- Scale Configuration -->
-                    <div class="section" style="margin-bottom: 20px;">
-                        <h3 style="margin: 0 0 12px 0; font-size: 14px; color: #333;">
-                            3. Scale Configuration
-                            <span style="font-weight: normal; color: #888; font-size: 12px;">
-                                (OO Gauge: 1:${OO_GAUGE.SCALE_RATIO})
-                            </span>
-                        </h3>
-                        
-                        <!-- Original Dimensions Display -->
-                        <div id="originalDimensions" style="
-                            background: #f5f5f5;
-                            padding: 12px;
-                            border-radius: 6px;
-                            margin-bottom: 12px;
-                            font-size: 13px;
-                        ">
-                            <!-- Will be filled dynamically -->
-                        </div>
-                        
-                        <!-- Scale Mode Selection -->
-                        <div style="margin-bottom: 12px;">
-                            <label style="display: block; font-size: 12px; color: #666; margin-bottom: 8px;">
-                                How do you want to scale this model?
-                            </label>
-                            <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px;">
-                                <label style="
-                                    display: flex;
-                                    align-items: center;
-                                    gap: 8px;
-                                    padding: 10px;
-                                    border: 2px solid #ddd;
-                                    border-radius: 6px;
-                                    cursor: pointer;
-                                    transition: all 0.2s;
-                                ">
-                                    <input type="radio" name="scaleMode" value="realWorld" checked>
-                                    <span>
-                                        <strong style="display: block; font-size: 13px;">Real-World Size</strong>
-                                        <small style="color: #888;">Specify actual dimensions</small>
-                                    </span>
-                                </label>
-                                <label style="
-                                    display: flex;
-                                    align-items: center;
-                                    gap: 8px;
-                                    padding: 10px;
-                                    border: 2px solid #ddd;
-                                    border-radius: 6px;
-                                    cursor: pointer;
-                                    transition: all 0.2s;
-                                ">
-                                    <input type="radio" name="scaleMode" value="reference">
-                                    <span>
-                                        <strong style="display: block; font-size: 13px;">Reference Size</strong>
-                                        <small style="color: #888;">Use standard references</small>
-                                    </span>
-                                </label>
-                                <label style="
-                                    display: flex;
-                                    align-items: center;
-                                    gap: 8px;
-                                    padding: 10px;
-                                    border: 2px solid #ddd;
-                                    border-radius: 6px;
-                                    cursor: pointer;
-                                    transition: all 0.2s;
-                                ">
-                                    <input type="radio" name="scaleMode" value="direct">
-                                    <span>
-                                        <strong style="display: block; font-size: 13px;">Direct Scale</strong>
-                                        <small style="color: #888;">Enter scale factor</small>
-                                    </span>
-                                </label>
-                                <label style="
-                                    display: flex;
-                                    align-items: center;
-                                    gap: 8px;
-                                    padding: 10px;
-                                    border: 2px solid #ddd;
-                                    border-radius: 6px;
-                                    cursor: pointer;
-                                    transition: all 0.2s;
-                                ">
-                                    <input type="radio" name="scaleMode" value="asIs">
-                                    <span>
-                                        <strong style="display: block; font-size: 13px;">Use As-Is</strong>
-                                        <small style="color: #888;">No scaling (1:1)</small>
-                                    </span>
-                                </label>
-                            </div>
-                        </div>
-                        
-                        <!-- Scale Mode Options -->
-                        <div id="scaleModeOptions">
-                            <!-- Real-World Options -->
-                            <div id="realWorldOptions" style="
-                                display: grid;
-                                grid-template-columns: 1fr 1fr;
-                                gap: 12px;
-                                padding: 12px;
-                                background: #f0f7ff;
-                                border-radius: 6px;
-                            ">
-                                <div>
-                                    <label style="display: block; font-size: 12px; color: #666; margin-bottom: 4px;">
-                                        Real-World Dimension (meters)
-                                    </label>
-                                    <input type="number" 
-                                           id="realWorldValue" 
-                                           value="10" 
-                                           min="0.1" 
-                                           step="0.1"
-                                           style="
-                                               width: 100%;
-                                               padding: 10px;
-                                               border: 1px solid #ddd;
-                                               border-radius: 6px;
-                                               font-size: 14px;
-                                               box-sizing: border-box;
-                                           ">
-                                </div>
-                                <div>
-                                    <label style="display: block; font-size: 12px; color: #666; margin-bottom: 4px;">
-                                        Apply To
-                                    </label>
-                                    <select id="realWorldAxis" style="
-                                        width: 100%;
-                                        padding: 10px;
-                                        border: 1px solid #ddd;
-                                        border-radius: 6px;
-                                        font-size: 14px;
-                                        background: white;
-                                    ">
-                                        <option value="height">Height (Y axis)</option>
-                                        <option value="width">Width (X axis)</option>
-                                        <option value="depth">Depth (Z axis)</option>
-                                    </select>
-                                </div>
-                            </div>
-                            
-                            <!-- Reference Options (hidden by default) -->
-                            <div id="referenceOptions" style="display: none; padding: 12px; background: #f0fff0; border-radius: 6px;">
-                                <label style="display: block; font-size: 12px; color: #666; margin-bottom: 4px;">
-                                    Reference Type
-                                </label>
-                                <select id="referenceKey" style="
-                                    width: 100%;
-                                    padding: 10px;
-                                    border: 1px solid #ddd;
-                                    border-radius: 6px;
-                                    font-size: 14px;
-                                    background: white;
-                                ">
-                                    ${Object.entries(REFERENCE_DIMENSIONS).map(([key, ref]) =>
-            `<option value="${key}">${ref.description}</option>`
-        ).join('')}
-                                </select>
-                                <p style="margin: 8px 0 0 0; font-size: 12px; color: #666;">
-                                    The model's height will match this reference size in OO scale.
-                                </p>
-                            </div>
-                            
-                            <!-- Direct Scale Options (hidden by default) -->
-                            <div id="directOptions" style="display: none; padding: 12px; background: #fff5f0; border-radius: 6px;">
-                                <label style="display: block; font-size: 12px; color: #666; margin-bottom: 4px;">
-                                    Scale Factor
-                                </label>
-                                <input type="number" 
-                                       id="directScale" 
-                                       value="1" 
-                                       min="0.0001" 
-                                       step="0.001"
-                                       style="
-                                           width: 100%;
-                                           padding: 10px;
-                                           border: 1px solid #ddd;
-                                           border-radius: 6px;
-                                           font-size: 14px;
-                                           box-sizing: border-box;
-                                       ">
-                                <p style="margin: 8px 0 0 0; font-size: 12px; color: #666;">
-                                    Multiply model dimensions by this factor. 
-                                    For OO scale from real-world meters: ${(1 / OO_GAUGE.SCALE_RATIO).toFixed(6)}
-                                </p>
-                            </div>
-                            
-                            <!-- As-Is Notice (hidden by default) -->
-                            <div id="asIsOptions" style="display: none; padding: 12px; background: #f5f5f5; border-radius: 6px;">
-                                <p style="margin: 0; font-size: 13px; color: #666;">
-                                    ⚠️ The model will be used without any scaling. 
-                                    Make sure the model is already in the correct OO scale.
-                                </p>
-                            </div>
-                        </div>
-                        
-                        <!-- Scale Preview -->
-                        <div id="scalePreview" style="
-                            margin-top: 12px;
-                            padding: 12px;
-                            background: #e8f5e9;
-                            border-radius: 6px;
-                            border-left: 4px solid #4CAF50;
-                        ">
-                            <!-- Scale preview will be inserted here -->
-                        </div>
-                    </div>
-                    
-                </div>
-                
-            </div>
-            
-            <!-- Footer -->
-            <div style="
-                padding: 16px 20px;
-                background: #f5f5f5;
-                border-top: 1px solid #ddd;
-                border-radius: 0 0 12px 12px;
-                display: flex;
-                justify-content: flex-end;
-                gap: 12px;
-            ">
-                <button id="cancelBtn" style="
-                    padding: 10px 20px;
-                    border: 1px solid #ccc;
-                    border-radius: 6px;
-                    background: white;
-                    color: #666;
-                    font-size: 14px;
-                    cursor: pointer;
-                    transition: all 0.2s;
-                ">
-                    Cancel
-                </button>
-                <button id="importBtn" style="
-                    padding: 10px 24px;
-                    border: none;
-                    border-radius: 6px;
-                    background: #4CAF50;
-                    color: white;
-                    font-size: 14px;
-                    font-weight: bold;
-                    cursor: pointer;
-                    transition: all 0.2s;
-                    opacity: 0.5;
-                " disabled>
-                    Import Model
-                </button>
-            </div>
-        `;
+        console.log('[ModelImportDialog] Dialog created');
     }
 
     // ========================================================================
@@ -649,20 +195,47 @@ export class ModelImportDialog {
     private attachEventHandlers(): void {
         if (!this.container) return;
 
-        // File drop zone
+        // File drop zone handlers
+        this.attachFileDropHandlers();
+
+        // Category card handlers (FIXED - now using proper handler function)
+        this.attachCategoryCardHandlers();
+
+        // Scale mode radio button handlers
+        this.attachScaleModeHandlers();
+
+        // Scale input handlers
+        this.attachScaleInputHandlers();
+
+        // Form input handlers
+        this.attachFormInputHandlers();
+
+        // Button handlers
+        this.attachButtonHandlers();
+    }
+
+    /**
+     * Attach file drop zone event handlers
+     */
+    private attachFileDropHandlers(): void {
+        if (!this.container) return;
+
         const dropZone = this.container.querySelector('#dropZone') as HTMLElement;
         const fileInput = this.container.querySelector('#fileInput') as HTMLInputElement;
 
         dropZone?.addEventListener('click', () => fileInput?.click());
+
         dropZone?.addEventListener('dragover', (e) => {
             e.preventDefault();
             dropZone.style.borderColor = '#4CAF50';
             dropZone.style.background = '#f0fff0';
         });
+
         dropZone?.addEventListener('dragleave', () => {
             dropZone.style.borderColor = '#ccc';
             dropZone.style.background = '#f9f9f9';
         });
+
         dropZone?.addEventListener('drop', (e) => {
             e.preventDefault();
             dropZone.style.borderColor = '#ccc';
@@ -678,8 +251,44 @@ export class ModelImportDialog {
                 this.handleFileSelect(fileInput.files[0]);
             }
         });
+    }
 
-        // Scale mode radio buttons
+    /**
+     * Attach category card click handlers
+     * FIXED: Now properly attaches click handlers to category cards
+     */
+    private attachCategoryCardHandlers(): void {
+        if (!this.container) return;
+
+        // Use the template's handler attachment function
+        attachCategoryHandlers(
+            this.container,
+            // Category change callback
+            (category: ModelCategory) => {
+                this.formState.category = category;
+                this.updateRollingStockWarning();
+                this.calculateScale();
+                console.log(`[ModelImportDialog] Category changed to: ${category}`);
+            },
+            // Rolling stock type change callback
+            (type: RollingStockSubcategory | null) => {
+                this.formState.rollingStockSubcategory = type;
+                this.calculateScale();
+                if (type) {
+                    console.log(`[ModelImportDialog] Rolling stock type: ${type}`);
+                }
+            }
+        );
+
+        console.log('[ModelImportDialog] Category card handlers attached');
+    }
+
+    /**
+     * Attach scale mode radio button handlers
+     */
+    private attachScaleModeHandlers(): void {
+        if (!this.container) return;
+
         const scaleModeRadios = this.container.querySelectorAll('input[name="scaleMode"]');
         scaleModeRadios.forEach(radio => {
             radio.addEventListener('change', (e) => {
@@ -689,8 +298,14 @@ export class ModelImportDialog {
                 this.calculateScale();
             });
         });
+    }
 
-        // Scale input handlers
+    /**
+     * Attach scale input handlers
+     */
+    private attachScaleInputHandlers(): void {
+        if (!this.container) return;
+
         const realWorldValue = this.container.querySelector('#realWorldValue') as HTMLInputElement;
         const realWorldAxis = this.container.querySelector('#realWorldAxis') as HTMLSelectElement;
         const referenceKey = this.container.querySelector('#referenceKey') as HTMLSelectElement;
@@ -715,27 +330,20 @@ export class ModelImportDialog {
             this.formState.directScale = parseFloat(directScale.value) || 1;
             this.calculateScale();
         });
+    }
 
-        // Form inputs
+    /**
+     * Attach form input handlers
+     */
+    private attachFormInputHandlers(): void {
+        if (!this.container) return;
+
         const nameInput = this.container.querySelector('#modelName') as HTMLInputElement;
-        const descInput = this.container.querySelector('#modelDescription') as HTMLTextAreaElement;
-        const categorySelect = this.container.querySelector('#modelCategory') as HTMLSelectElement;
         const tagsInput = this.container.querySelector('#modelTags') as HTMLInputElement;
 
         nameInput?.addEventListener('input', () => {
             this.formState.name = nameInput.value;
             this.updateImportButton();
-        });
-
-        descInput?.addEventListener('input', () => {
-            this.formState.description = descInput.value;
-        });
-
-        categorySelect?.addEventListener('change', () => {
-            this.formState.category = categorySelect.value as ModelCategory;
-            this.updateRollingStockWarning();
-            // Recalculate scale when category changes (rolling stock uses different calculation)
-            this.calculateScale();
         });
 
         tagsInput?.addEventListener('input', () => {
@@ -744,8 +352,14 @@ export class ModelImportDialog {
                 .map(t => t.trim())
                 .filter(t => t.length > 0);
         });
+    }
 
-        // Buttons
+    /**
+     * Attach button handlers
+     */
+    private attachButtonHandlers(): void {
+        if (!this.container) return;
+
         const cancelBtn = this.container.querySelector('#cancelBtn') as HTMLButtonElement;
         const importBtn = this.container.querySelector('#importBtn') as HTMLButtonElement;
 
@@ -809,47 +423,69 @@ export class ModelImportDialog {
             fileInfo.innerHTML += '<p style="margin: 8px 0 0 0; color: #666;">Loading model...</p>';
         }
 
-        // Load the model
-        const result = await this.modelSystem.loadModelFromFile(
-            this.loadedFileData.dataUrl,
-            this.loadedFileData.fileName
-        );
+        try {
+            // Load the model (method is loadModelFromFile, not loadModel)
+            const result = await this.modelSystem.loadModelFromFile(
+                this.loadedFileData.dataUrl,
+                this.loadedFileData.fileName
+            );
 
-        this.loadedFileData.loadResult = result;
+            this.loadedFileData.loadResult = result;
 
-        if (result.success && result.dimensions) {
-            // Show model details section
-            const detailsSection = this.container?.querySelector('#modelDetailsSection') as HTMLElement;
-            if (detailsSection) {
-                detailsSection.style.display = 'block';
+            if (result.success && result.dimensions) {
+                // Update file info with dimensions
+                if (fileInfo) {
+                    const dims = result.dimensions;
+                    fileInfo.innerHTML = `
+                        <div style="display: flex; align-items: flex-start; gap: 10px;">
+                            <span style="font-size: 24px;">✅</span>
+                            <div>
+                                <strong>${this.loadedFileData.fileName}</strong><br>
+                                <span style="font-size: 12px; color: #666;">
+                                    ${(this.loadedFileData.fileSize / 1024).toFixed(1)} KB
+                                </span>
+                                <div style="margin-top: 6px; font-size: 12px; color: #333;">
+                                    <strong>Original size:</strong> 
+                                    ${dims.width.toFixed(3)} × ${dims.height.toFixed(3)} × ${dims.depth.toFixed(3)} units
+                                </div>
+                            </div>
+                        </div>
+                    `;
+                }
+
+                // Auto-fill name from filename
+                const nameInput = this.container?.querySelector('#modelName') as HTMLInputElement;
+                if (nameInput && !nameInput.value) {
+                    const baseName = this.loadedFileData.fileName.replace(/\.(glb|gltf)$/i, '');
+                    nameInput.value = baseName;
+                    this.formState.name = baseName;
+                }
+
+                // Auto-detect category from filename
+                this.autoDetectCategory(this.loadedFileData.fileName);
+
+                // Calculate initial scale
+                this.calculateScale();
+
+                // Update import button
+                this.updateImportButton();
+
+            } else {
+                // Show error
+                if (fileInfo) {
+                    fileInfo.innerHTML += `
+                        <p style="margin: 8px 0 0 0; color: #d32f2f;">
+                            ❌ Error loading model: ${result.error || 'Unknown error'}
+                        </p>
+                    `;
+                }
             }
-
-            // Update original dimensions display
-            this.updateOriginalDimensions(result.dimensions);
-
-            // Set default name from filename
-            const nameInput = this.container?.querySelector('#modelName') as HTMLInputElement;
-            if (nameInput && !nameInput.value) {
-                const baseName = this.loadedFileData.fileName.replace(/\.(glb|gltf)$/i, '');
-                nameInput.value = baseName;
-                this.formState.name = baseName;
-            }
-
-            // Auto-detect category from filename (especially rolling stock)
-            this.autoDetectCategory(this.loadedFileData.fileName);
-
-            // Calculate initial scale
-            this.calculateScale();
-
-            // Update import button
-            this.updateImportButton();
-
-        } else {
-            // Show error
+        } catch (error) {
+            console.error('[ModelImportDialog] Error loading model:', error);
             if (fileInfo) {
                 fileInfo.innerHTML += `
                     <p style="margin: 8px 0 0 0; color: #d32f2f;">
-                        ❌ Error loading model: ${result.error || 'Unknown error'}
+                        ❌ Error: ${error instanceof Error ? error.message : 'Unknown error'}
                     </p>
                 `;
             }
@@ -861,119 +497,76 @@ export class ModelImportDialog {
     // ========================================================================
 
     /**
-     * Update rolling stock warning visibility
-     */
-    private updateRollingStockWarning(): void {
-        const warning = this.container?.querySelector('#rollingStockWarning') as HTMLElement;
-        if (!warning) return;
-
-        if (this.formState.category === 'rolling_stock') {
-            warning.style.display = 'block';
-        } else {
-            warning.style.display = 'none';
-        }
-    }
-
-    /**
-     * Auto-detect if model is rolling stock from filename
-     * @param fileName - The file name to check
-     * @returns True if likely rolling stock
-     */
-    private detectRollingStock(fileName: string): boolean {
-        const lowerName = fileName.toLowerCase();
-
-        // Keywords that indicate rolling stock
-        const rollingStockKeywords = [
-            'train', 'loco', 'locomotive', 'engine',
-            'coach', 'carriage', 'passenger',
-            'wagon', 'freight', 'goods', 'tanker', 'hopper',
-            'caboose', 'brake', 'van',
-            'tender', 'boxcar', 'flatcar', 'gondola',
-            'pullman', 'sleeper', 'dining',
-            'hst', 'dmu', 'emu', 'unit',
-            'class_', 'br_', 'gwr_', 'lner_', 'lms_', 'sr_'
-        ];
-
-        return rollingStockKeywords.some(keyword => lowerName.includes(keyword));
-    }
-
-    /**
-     * Auto-set category based on filename
-     * @param fileName - The file name to analyze
-     */
-    private autoDetectCategory(fileName: string): void {
-        const categorySelect = this.container?.querySelector('#modelCategory') as HTMLSelectElement;
-        if (!categorySelect) return;
-
-        // Check for rolling stock first (most important for track placement)
-        if (this.detectRollingStock(fileName)) {
-            categorySelect.value = 'rolling_stock';
-            this.formState.category = 'rolling_stock';
-            console.log('[ModelImportDialog] Auto-detected rolling stock from filename');
-        }
-        // Could add more auto-detection here for other categories
-
-        // Update the warning display
-        this.updateRollingStockWarning();
-    }
-
-    /**
      * Update file info display
      */
     private updateFileInfo(): void {
         if (!this.loadedFileData || !this.container) return;
 
         const fileInfo = this.container.querySelector('#fileInfo') as HTMLElement;
-        const dropZoneContent = this.container.querySelector('#dropZoneContent') as HTMLElement;
 
         if (fileInfo) {
             const sizeKB = (this.loadedFileData.fileSize / 1024).toFixed(1);
             fileInfo.style.display = 'block';
             fileInfo.innerHTML = `
                 <div style="display: flex; align-items: center; gap: 10px;">
-                    <span style="font-size: 24px;">✅</span>
+                    <span style="font-size: 24px;">📄</span>
                     <div>
                         <strong>${this.loadedFileData.fileName}</strong><br>
-                        <span style="font-size: 12px; color: #666;">${sizeKB} KB</span>
+                        <span style="font-size: 12px; color: #666;">${sizeKB} KB - Loading...</span>
                     </div>
                 </div>
-            `;
-        }
-
-        if (dropZoneContent) {
-            dropZoneContent.innerHTML = `
-                <div style="font-size: 40px; margin-bottom: 10px;">📦</div>
-                <p style="margin: 0; color: #4CAF50;">
-                    <strong>Model loaded!</strong><br>
-                    <span style="font-size: 12px; color: #888;">
-                        Click to select a different file
-                    </span>
-                </p>
             `;
         }
     }
 
     /**
-     * Update original dimensions display
-     * @param dimensions - Model dimensions
+     * Update rolling stock warning visibility
      */
-    private updateOriginalDimensions(dimensions: ModelDimensions): void {
-        const el = this.container?.querySelector('#originalDimensions') as HTMLElement;
-        if (!el) return;
+    private updateRollingStockWarning(): void {
+        const warning = this.container?.querySelector('#rollingStockWarning') as HTMLElement;
+        const scaleModeSection = this.container?.querySelector('#scaleModeSection') as HTMLElement;
 
-        el.innerHTML = `
-            <div style="display: flex; justify-content: space-between; align-items: center;">
-                <span><strong>Original Model Dimensions:</strong></span>
-                <span style="font-family: monospace;">
-                    ${ModelScaleHelper.formatDimension(dimensions.width)} × 
-                    ${ModelScaleHelper.formatDimension(dimensions.height)} × 
-                    ${ModelScaleHelper.formatDimension(dimensions.depth)}
-                </span>
-            </div>
-            <div style="margin-top: 6px; font-size: 12px; color: #666;">
-                (Width × Height × Depth)
-            </div>
-        `;
+        if (!warning) return;
+
+        if (this.formState.category === 'rolling_stock') {
+            warning.style.display = 'block';
+            // Hide scale mode options for rolling stock (uses automatic scaling)
+            if (scaleModeSection) {
+                scaleModeSection.style.opacity = '0.5';
+                scaleModeSection.style.pointerEvents = 'none';
+            }
+        } else {
+            warning.style.display = 'none';
+            if (scaleModeSection) {
+                scaleModeSection.style.opacity = '1';
+                scaleModeSection.style.pointerEvents = 'auto';
+            }
+        }
+    }
+
+    /**
+     * Auto-detect category from filename and select appropriate card
+     * @param fileName - The filename to analyze
+     */
+    private autoDetectCategory(fileName: string): void {
+        if (!this.container) return;
+
+        // Check for rolling stock
+        if (detectRollingStock(fileName)) {
+            const type = detectRollingStockType(fileName);
+
+            // Map type to subcategory
+            let subcategory: RollingStockSubcategory = 'locomotive';
+            if (type === 'coach') subcategory = 'coach';
+            else if (type === 'wagon' || type === 'container') subcategory = 'wagon';
+
+            // Find and click the appropriate card
+            const card = this.container.querySelector(`[data-rolling-stock-type="${subcategory}"]`) as HTMLElement;
+            if (card) {
+                card.click();
+                console.log(`[ModelImportDialog] Auto-detected rolling stock: ${subcategory}`);
+            }
+        }
     }
 
     /**
@@ -1024,6 +617,10 @@ export class ModelImportDialog {
         });
     }
 
+    // ========================================================================
+    // SCALE CALCULATION
+    // ========================================================================
+
     /**
      * Calculate scale based on current settings
      */
@@ -1035,26 +632,12 @@ export class ModelImportDialog {
         // ====================================================================
         // ROLLING STOCK SPECIAL HANDLING
         // For rolling stock, always use the specialized rolling stock calculator
-        // which scales based on target OO gauge lengths (230mm for locomotives, etc.)
         // ====================================================================
         if (this.formState.category === 'rolling_stock') {
-            // Detect rolling stock type from filename
-            const fileName = this.loadedFileData?.fileName?.toLowerCase() || '';
-            let rollingStockType: 'locomotive' | 'steam_locomotive' | 'coach' | 'wagon' | 'container' = 'locomotive';
+            const type = detectRollingStockType(this.loadedFileData.fileName);
 
-            if (fileName.includes('coach') || fileName.includes('carriage') || fileName.includes('passenger')) {
-                rollingStockType = 'coach';
-            } else if (fileName.includes('wagon') || fileName.includes('freight') || fileName.includes('goods') ||
-                fileName.includes('tanker') || fileName.includes('hopper')) {
-                rollingStockType = 'wagon';
-            } else if (fileName.includes('steam')) {
-                rollingStockType = 'steam_locomotive';
-            } else if (fileName.includes('container')) {
-                rollingStockType = 'container';
-            }
-
-            console.log(`[ModelImportDialog] Using rolling stock scale for type: ${rollingStockType}`);
-            this.currentScaleResult = ModelScaleHelper.calculateRollingStockScale(dimensions, rollingStockType);
+            console.log(`[ModelImportDialog] Using rolling stock scale for type: ${type}`);
+            this.currentScaleResult = ModelScaleHelper.calculateRollingStockScale(dimensions, type);
             this.updateScalePreview();
             return;
         }
@@ -1084,7 +667,7 @@ export class ModelImportDialog {
                 break;
 
             case 'reference':
-                this.currentScaleResult = ModelScaleHelper.calculateScaleFromReference(
+                this.currentScaleResult = ModelScaleHelper.calculateFromReference(
                     dimensions, this.formState.referenceKey, 'height'
                 );
                 break;
@@ -1174,7 +757,7 @@ export class ModelImportDialog {
                 description: this.formState.description.trim(),
                 category: this.formState.category,
                 tags: this.formState.tags,
-                filePath: this.loadedFileData.dataUrl, // Store data URL for now
+                filePath: this.loadedFileData.dataUrl,
                 originalDimensions: {
                     width: this.loadedFileData.loadResult.dimensions!.width,
                     height: this.loadedFileData.loadResult.dimensions!.height,
@@ -1199,6 +782,8 @@ export class ModelImportDialog {
             });
 
             console.log('[ModelImportDialog] Model imported:', entry.name);
+            console.log('[ModelImportDialog]   Category:', this.formState.category);
+            console.log('[ModelImportDialog]   Scale:', this.currentScaleResult.scaleFactor);
 
             // Close with result
             this.close(entry);

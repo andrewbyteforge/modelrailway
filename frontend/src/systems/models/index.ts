@@ -5,10 +5,18 @@
  * 
  * Exports all model-related modules for easy importing.
  * 
+ * v1.1.0 - Added re-exports from centralized constants
+ * v1.0.0 - Original release
+ * 
  * @module models
+ * @author Model Railway Workbench
+ * @version 1.1.0
  */
 
-// Core model system
+// ============================================================================
+// CORE MODEL SYSTEM
+// ============================================================================
+
 export { ModelSystem } from './ModelSystem';
 export type {
     PlacedModel,
@@ -16,7 +24,10 @@ export type {
     PlacementOptions
 } from './ModelSystem';
 
-// Model library
+// ============================================================================
+// MODEL LIBRARY
+// ============================================================================
+
 export { ModelLibrary } from './ModelLibrary';
 export type {
     ModelLibraryEntry,
@@ -28,18 +39,49 @@ export type {
     LibraryFilter
 } from './ModelLibrary';
 
-// Scale helper
-export { ModelScaleHelper, OO_GAUGE, REFERENCE_DIMENSIONS } from './ModelScaleHelper';
+// ============================================================================
+// SCALE HELPER
+// ============================================================================
+
+export { ModelScaleHelper } from './ModelScaleHelper';
 export type {
     ModelDimensions,
     ScaleResult,
     ScalingMode
 } from './ModelScaleHelper';
 
-// Track model placer for rolling stock
+// ============================================================================
+// TRACK MODEL PLACER
+// ============================================================================
+
 export { TrackModelPlacer } from './TrackModelPlacer';
 export type {
     TrackSegmentInfo,
     TrackPlacementResult,
     PlacementCallback
 } from './TrackModelPlacer';
+
+// ============================================================================
+// DEBUG UTILITIES
+// ============================================================================
+
+export { setupModelScaleDebug } from './ModelScaleDebug';
+export type { ModelDebugInterface } from './ModelScaleDebug';
+
+// ============================================================================
+// RE-EXPORTS FROM CENTRALIZED CONSTANTS
+// ============================================================================
+// These are re-exported for backwards compatibility with existing imports
+// New code should import directly from '../../constants'
+
+export {
+    OO_GAUGE,
+    OO_ROLLING_STOCK_TARGETS,
+    REFERENCE_DIMENSIONS,
+    TRACK_GEOMETRY
+} from '../../constants';
+
+export type {
+    RollingStockType,
+    ReferenceDimensionKey
+} from '../../constants';

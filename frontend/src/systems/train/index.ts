@@ -1,20 +1,28 @@
 /**
- * Train System - Index
+ * index.ts - Train System Module Exports
  * 
  * Path: frontend/src/systems/train/index.ts
  * 
- * Exports all train-related modules for easy importing.
+ * Central export point for all train system components.
+ * Import from this module instead of individual files.
  * 
  * @module train
  * @author Model Railway Workbench
- * @version 1.0.0
+ * @version 1.1.0 - Added TrainIntegration export
  * 
  * @example
  * ```typescript
- * import { TrainSystem, TrainController, PointsManager } from '../systems/train';
+ * import { 
+ *     TrainSystem, 
+ *     TrainController, 
+ *     TrainIntegration,
+ *     PointsManager 
+ * } from '../systems/train';
  * 
  * const trainSystem = new TrainSystem(scene, trackSystem);
  * trainSystem.initialize();
+ * 
+ * const trainIntegration = new TrainIntegration(scene, trainSystem, graph);
  * ```
  */
 
@@ -32,6 +40,16 @@ export type {
     TrainControllerConfig,
     TrainEvents
 } from './TrainController';
+
+// ============================================================================
+// INTEGRATION - NEW
+// ============================================================================
+
+export { TrainIntegration, createGlobalHelpers } from './TrainIntegration';
+export type {
+    TrainRegistrationResult,
+    ScanOptions
+} from './TrainIntegration';
 
 // ============================================================================
 // PHYSICS

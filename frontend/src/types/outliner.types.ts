@@ -3,60 +3,92 @@
  * 
  * Path: frontend/src/types/outliner.types.ts
  * 
- * Defines all interfaces and types used by the World Outliner,
- * including nodes, folders, items, and event payloads.
+ * Defines all interfaces and types used by the World Outliner.
+ * Core types are imported from railway.types.ts for consistency.
  * 
  * @module OutlinerTypes
+ * @version 2.0.0 - Refactored to use unified types
  */
-
-import { Vector3, Quaternion } from '@babylonjs/core/Maths/math';
 
 // ============================================================================
-// NODE TYPES
+// IMPORTS FROM UNIFIED TYPES
 // ============================================================================
 
-/**
- * Types of nodes that can exist in the outliner
- * 
- * - folder: Organisational folder (can contain children)
- * - baseboard: Baseboard item
- * - track: Track piece
- * - rolling_stock: Trains, wagons, locomotives, etc.
- * - scenery: Buildings, trees, vegetation, accessories, etc.
- * - light: Light sources
- * - model: Generic imported 3D model
- */
-export type OutlinerNodeType =
-    | 'folder'          // Organisational folder (can contain children)
-    | 'baseboard'       // Baseboard item
-    | 'track'           // Track piece
-    | 'rolling_stock'   // Trains, wagons, etc.
-    | 'scenery'         // Buildings, trees, etc.
-    | 'light'           // Light sources
-    | 'model';          // Generic imported 3D model
+// Type-only imports (erased at runtime)
+import type {
+    OutlinerNodeType,
+    DefaultOutlinerCategory,
+    AssetCategory,
+    Transform3D,
+} from './railway.types';
 
-/**
- * Default category folders that are auto-created
- */
-export type DefaultCategory =
-    | 'Baseboards'
-    | 'Track'
-    | 'Rolling Stock'
-    | 'Scenery'
-    | 'Lights';
+// Value imports (exist at runtime)
+import {
+    NODE_TYPE_TO_CATEGORY,
+    NODE_TYPE_ICONS,
+    OUTLINER_CATEGORY_ICONS,
+    getOutlinerNodeType,
+    IDENTITY_TRANSFORM,
+} from './railway.types';
 
-/**
- * Map of node types to their default parent category
- * When a node is created with parentId: null, it auto-groups to its category folder
- */
-export const NODE_TYPE_TO_CATEGORY: Record<Exclude<OutlinerNodeType, 'folder'>, DefaultCategory> = {
-    baseboard: 'Baseboards',
-    track: 'Track',
-    rolling_stock: 'Rolling Stock',
-    scenery: 'Scenery',
-    light: 'Lights',
-    model: 'Scenery', // Models default to Scenery
+// ============================================================================
+// RE-EXPORTS FOR BACKWARDS COMPATIBILITY
+// ============================================================================
+
+// Re-export types
+export type {
+    OutlinerNodeType,
 };
+
+// Re-export values
+export {
+    NODE_TYPE_TO_CATEGORY,
+    NODE_TYPE_ICONS,
+    getOutlinerNodeType,
+};
+
+// Legacy aliases
+export type DefaultCategory = DefaultOutlinerCategory;
+export const CATEGORY_ICONS = OUTLINER_CATEGORY_ICONS;
+
+// Legacy helper function (now uses unified version)
+export function getNodeTypeForCategory(category: string): OutlinerNodeType {
+    return getOutlinerNodeType(category);
+}
+
+// Legacy mapping (now uses unified version)
+export const MODEL_CATEGORY_TO_NODE_TYPE: Record<string, OutlinerNodeType> = {
+    'rolling_stock': 'rolling_stock',
+    'locomotive': 'rolling_stock',
+    'coach': 'rolling_stock',
+    'wagon': 'rolling_stock',
+    'scenery': 'scenery',
+    'building': 'scenery',
+    'buildings': 'scenery',
+    'structure': 'scenery',
+    'vegetation': 'scenery',
+    'accessory': 'scenery',
+    'accessories': 'scenery',
+    'infrastructure': 'scenery',
+    'vehicles': 'scenery',
+    'figures': 'scenery',
+    'custom': 'model',
+};
+
+// ============================================================================
+// OUTLINER TRANSFORM (uses unified Transform3D)
+// ============================================================================
+
+/**
+ * Transform data for outliner nodes
+ * Alias for unified Transform3D
+ */
+export type OutlinerTransform = Transform3D;
+
+/**
+ * Default transform
+ */
+export const DEFAULT_OUTLINER_TRANSFORM: OutlinerTransform = IDENTITY_TRANSFORM;
 
 // ============================================================================
 // NODE DATA INTERFACES
@@ -96,7 +128,7 @@ export interface OutlinerNodeData {
     /** Reference to scene object ID (for non-folder nodes) */
     sceneObjectId: string | null;
 
-    /** Local transform relative to parent (for transform parenting) */
+    /** Local transform relative to parent */
     localTransform: OutlinerTransform;
 
     /** Metadata for additional properties */
@@ -107,15 +139,6 @@ export interface OutlinerNodeData {
 
     /** Last modified timestamp */
     updatedAt: number;
-}
-
-/**
- * Transform data for position, rotation, scale
- */
-export interface OutlinerTransform {
-    position: { x: number; y: number; z: number };
-    rotation: { x: number; y: number; z: number; w: number }; // Quaternion
-    scale: { x: number; y: number; z: number };
 }
 
 /**
@@ -137,6 +160,17 @@ export interface OutlinerState {
     /** Last modified timestamp */
     updatedAt: number;
 }
+
+/**
+ * Default empty outliner state
+ */
+export const DEFAULT_OUTLINER_STATE: OutlinerState = {
+    schemaVersion: '2.0.0',
+    nodes: [],
+    selectedIds: [],
+    rootIds: [],
+    updatedAt: Date.now()
+};
 
 // ============================================================================
 // EVENT TYPES
@@ -185,7 +219,6 @@ export interface NodeDeletedEvent extends OutlinerEventBase {
     nodeId: string;
     nodeType: OutlinerNodeType;
     parentId: string | null;
-    /** IDs of all descendants that were also deleted */
     deletedDescendantIds: string[];
 }
 
@@ -218,7 +251,6 @@ export interface NodeVisibilityChangedEvent extends OutlinerEventBase {
     type: 'node:visibility_changed';
     nodeId: string;
     visible: boolean;
-    /** IDs of descendants also affected */
     affectedDescendantIds: string[];
 }
 
@@ -246,7 +278,7 @@ export interface NodeExpandedChangedEvent extends OutlinerEventBase {
 export interface NodeSelectedEvent extends OutlinerEventBase {
     type: 'node:selected';
     nodeId: string;
-    additive: boolean; // Was shift/ctrl held
+    additive: boolean;
 }
 
 /**
@@ -273,7 +305,6 @@ export interface NodeDuplicatedEvent extends OutlinerEventBase {
     type: 'node:duplicated';
     sourceNodeId: string;
     newNodeId: string;
-    /** Map of original descendant IDs to new IDs */
     descendantIdMap: Record<string, string>;
 }
 
@@ -351,64 +382,44 @@ export const DEFAULT_OUTLINER_UI_CONFIG: OutlinerUIConfig = {
 };
 
 // ============================================================================
-// ICON DEFINITIONS
+// HELPER FUNCTIONS
 // ============================================================================
 
 /**
- * Icons for each node type (using emoji for simplicity)
+ * Create a new outliner node with defaults
  */
-export const NODE_TYPE_ICONS: Record<OutlinerNodeType, string> = {
-    folder: '📁',
-    baseboard: '🟫',
-    track: '🛤️',
-    rolling_stock: '🚂',
-    scenery: '🏠',
-    light: '💡',
-    model: '📦',
-};
+export function createOutlinerNode(
+    partial: Partial<OutlinerNodeData> & { id: string; name: string; type: OutlinerNodeType }
+): OutlinerNodeData {
+    const now = Date.now();
+    return {
+        id: partial.id,
+        name: partial.name,
+        type: partial.type,
+        parentId: partial.parentId ?? null,
+        childIds: partial.childIds ?? [],
+        sortOrder: partial.sortOrder ?? 0,
+        visible: partial.visible ?? true,
+        locked: partial.locked ?? false,
+        expanded: partial.expanded ?? true,
+        sceneObjectId: partial.sceneObjectId ?? null,
+        localTransform: partial.localTransform ?? { ...IDENTITY_TRANSFORM },
+        metadata: partial.metadata ?? {},
+        createdAt: partial.createdAt ?? now,
+        updatedAt: partial.updatedAt ?? now,
+    };
+}
 
 /**
- * Icons for default category folders
+ * Get icon for a node
  */
-export const CATEGORY_ICONS: Record<DefaultCategory, string> = {
-    'Baseboards': '🟫',
-    'Track': '🛤️',
-    'Rolling Stock': '🚂',
-    'Scenery': '🏠',
-    'Lights': '💡',
-};
-
-// ============================================================================
-// HELPER TYPES FOR MODEL IMPORT INTEGRATION
-// ============================================================================
+export function getNodeIcon(type: OutlinerNodeType): string {
+    return NODE_TYPE_ICONS[type] || '📦';
+}
 
 /**
- * Map model categories to outliner node types
- * Used by ModelImportButton when registering models with the outliner
+ * Get icon for a category folder
  */
-export const MODEL_CATEGORY_TO_NODE_TYPE: Record<string, OutlinerNodeType> = {
-    'rolling_stock': 'rolling_stock',
-    'locomotive': 'rolling_stock',
-    'coach': 'rolling_stock',
-    'wagon': 'rolling_stock',
-    'scenery': 'scenery',
-    'building': 'scenery',
-    'buildings': 'scenery',
-    'structure': 'scenery',
-    'vegetation': 'scenery',
-    'accessory': 'scenery',
-    'accessories': 'scenery',
-    'infrastructure': 'scenery',
-    'vehicles': 'scenery',
-    'figures': 'scenery',
-    'custom': 'model',
-};
-
-/**
- * Get the outliner node type for a model category
- * @param category - Model category string
- * @returns Appropriate OutlinerNodeType
- */
-export function getNodeTypeForCategory(category: string): OutlinerNodeType {
-    return MODEL_CATEGORY_TO_NODE_TYPE[category.toLowerCase()] || 'scenery';
+export function getCategoryIcon(category: DefaultOutlinerCategory): string {
+    return OUTLINER_CATEGORY_ICONS[category] || '📁';
 }

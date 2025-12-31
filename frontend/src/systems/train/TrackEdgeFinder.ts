@@ -9,9 +9,14 @@
  * - Getting world position from edge + t
  * - Supporting train placement on track
  * 
+ * FIX APPLIED (v1.1.0):
+ * - Added proper null checks for graph nodes and their positions
+ * - Added safety limits to prevent browser freeze
+ * - Better error handling throughout
+ * 
  * @module TrackEdgeFinder
  * @author Model Railway Workbench
- * @version 1.0.0
+ * @version 1.1.0
  */
 
 import { Vector3 } from '@babylonjs/core/Maths/math.vector';
@@ -29,6 +34,9 @@ const MAX_SEARCH_DISTANCE = 0.5; // 500mm
 
 /** Number of samples per edge for distance calculation */
 const SAMPLES_PER_EDGE = 20;
+
+/** Maximum edges to search (safety limit) */
+const MAX_EDGES_TO_SEARCH = 500;
 
 // ============================================================================
 // TYPE DEFINITIONS
@@ -112,11 +120,30 @@ export class TrackEdgeFinder {
 
     /**
      * Find the nearest edge to a world position
+     * 
+     * SAFETY: Limited to MAX_EDGES_TO_SEARCH to prevent browser freeze
+     * 
      * @param position - World position to search from
      * @param options - Search options
      * @returns Edge find result or null if none found
      */
     findNearestEdge(position: Vector3, options?: EdgeFindOptions): EdgeFindResult | null {
+        // ====================================================================
+        // GUARD: Validate position
+        // ====================================================================
+        if (!position || position.x === undefined || position.y === undefined || position.z === undefined) {
+            console.warn(`${LOG_PREFIX} findNearestEdge: Invalid position`);
+            return null;
+        }
+
+        // ====================================================================
+        // GUARD: Check graph exists
+        // ====================================================================
+        if (!this.graph) {
+            console.warn(`${LOG_PREFIX} findNearestEdge: No graph available`);
+            return null;
+        }
+
         const maxDist = options?.maxDistance ?? MAX_SEARCH_DISTANCE;
         const excludeEdges = new Set(options?.excludeEdges || []);
         const filterPieces = options?.filterByPieces ? new Set(options.filterByPieces) : null;
@@ -124,21 +151,45 @@ export class TrackEdgeFinder {
         let bestResult: EdgeFindResult | null = null;
         let bestDistance = maxDist;
 
-        const allEdges = this.graph.getAllEdges();
+        // ====================================================================
+        // Get edges with safety limit
+        // ====================================================================
+        let allEdges: GraphEdge[];
+        try {
+            allEdges = this.graph.getAllEdges();
+        } catch (error) {
+            console.error(`${LOG_PREFIX} findNearestEdge: Error getting edges:`, error);
+            return null;
+        }
 
-        for (const edge of allEdges) {
-            // Skip excluded edges
-            if (excludeEdges.has(edge.id)) continue;
+        if (!allEdges || allEdges.length === 0) {
+            return null;
+        }
 
-            // Filter by piece if specified
-            if (filterPieces && !filterPieces.has(edge.pieceId)) continue;
+        // SAFETY: Limit edges to search
+        const edgesToSearch = allEdges.slice(0, MAX_EDGES_TO_SEARCH);
 
-            // Find closest point on this edge
-            const result = this.findClosestPointOnEdge(edge, position);
+        // ====================================================================
+        // Search edges
+        // ====================================================================
+        for (const edge of edgesToSearch) {
+            try {
+                // Skip excluded edges
+                if (!edge || excludeEdges.has(edge.id)) continue;
 
-            if (result && result.distance < bestDistance) {
-                bestDistance = result.distance;
-                bestResult = result;
+                // Filter by piece if specified
+                if (filterPieces && !filterPieces.has(edge.pieceId)) continue;
+
+                // Find closest point on this edge
+                const result = this.findClosestPointOnEdge(edge, position);
+
+                if (result && result.distance < bestDistance) {
+                    bestDistance = result.distance;
+                    bestResult = result;
+                }
+            } catch (error) {
+                // Skip this edge on error, don't crash
+                continue;
             }
         }
 
@@ -147,48 +198,100 @@ export class TrackEdgeFinder {
 
     /**
      * Find closest point on a specific edge to a position
+     * 
      * @param edge - Edge to search
      * @param position - World position
      * @returns Result or null if edge is invalid
      */
     findClosestPointOnEdge(edge: GraphEdge, position: Vector3): EdgeFindResult | null {
-        const fromNode = this.graph.getNode(edge.fromNodeId);
-        const toNode = this.graph.getNode(edge.toNodeId);
+        // ====================================================================
+        // GUARD: Validate edge
+        // ====================================================================
+        if (!edge || !edge.fromNodeId || !edge.toNodeId) {
+            return null;
+        }
 
+        // ====================================================================
+        // Get and validate nodes
+        // ====================================================================
+        let fromNode: GraphNode | undefined;
+        let toNode: GraphNode | undefined;
+
+        try {
+            fromNode = this.graph.getNode(edge.fromNodeId);
+            toNode = this.graph.getNode(edge.toNodeId);
+        } catch (error) {
+            return null;
+        }
+
+        // CRITICAL: Validate nodes exist
         if (!fromNode || !toNode) {
             return null;
         }
 
-        // Sample points along the edge and find closest
-        let bestT = 0;
-        let bestDistance = Infinity;
-        let bestPosition = fromNode.pos.clone();
-        let bestForward = toNode.pos.subtract(fromNode.pos).normalize();
-
-        for (let i = 0; i <= SAMPLES_PER_EDGE; i++) {
-            const t = i / SAMPLES_PER_EDGE;
-            const sample = this.getPositionOnEdge(edge, fromNode, toNode, t);
-
-            const dist = Vector3.Distance(position, sample.position);
-
-            if (dist < bestDistance) {
-                bestDistance = dist;
-                bestT = t;
-                bestPosition = sample.position;
-                bestForward = sample.forward;
-            }
+        // CRITICAL: Validate node positions exist
+        if (!fromNode.pos || !toNode.pos) {
+            return null;
         }
 
-        // Refine with binary search for more precision
-        const refined = this.refineTValue(edge, fromNode, toNode, position, bestT);
+        // CRITICAL: Validate position coordinates
+        if (fromNode.pos.x === undefined || fromNode.pos.y === undefined || fromNode.pos.z === undefined) {
+            return null;
+        }
 
-        return {
-            edge,
-            t: refined.t,
-            distance: refined.distance,
-            position: refined.position,
-            forward: refined.forward
-        };
+        if (toNode.pos.x === undefined || toNode.pos.y === undefined || toNode.pos.z === undefined) {
+            return null;
+        }
+
+        // ====================================================================
+        // Sample points along the edge and find closest
+        // ====================================================================
+        try {
+            let bestT = 0;
+            let bestDistance = Infinity;
+            let bestPosition = fromNode.pos.clone();
+
+            // Calculate forward direction with zero-length check
+            let bestForward = toNode.pos.subtract(fromNode.pos);
+            if (bestForward.length() < 0.0001) {
+                // Zero-length edge
+                return null;
+            }
+            bestForward = bestForward.normalize();
+
+            for (let i = 0; i <= SAMPLES_PER_EDGE; i++) {
+                const t = i / SAMPLES_PER_EDGE;
+                const sample = this.getPositionOnEdge(edge, fromNode, toNode, t);
+
+                if (!sample || !sample.position) {
+                    continue;
+                }
+
+                const dist = Vector3.Distance(position, sample.position);
+
+                if (dist < bestDistance) {
+                    bestDistance = dist;
+                    bestT = t;
+                    bestPosition = sample.position;
+                    bestForward = sample.forward;
+                }
+            }
+
+            // Refine with binary search for more precision
+            const refined = this.refineTValue(edge, fromNode, toNode, position, bestT);
+
+            return {
+                edge,
+                t: refined.t,
+                distance: refined.distance,
+                position: refined.position,
+                forward: refined.forward
+            };
+
+        } catch (error) {
+            console.warn(`${LOG_PREFIX} findClosestPointOnEdge error:`, error);
+            return null;
+        }
     }
 
     /**
@@ -207,7 +310,7 @@ export class TrackEdgeFinder {
         let bestResult = this.getPositionOnEdge(edge, fromNode, toNode, initialT);
         let bestDist = Vector3.Distance(targetPos, bestResult.position);
 
-        // Binary search iterations
+        // Binary search iterations (limited for safety)
         for (let iter = 0; iter < 8; iter++) {
             const midLow = (low + bestT) / 2;
             const midHigh = (bestT + high) / 2;
@@ -260,6 +363,14 @@ export class TrackEdgeFinder {
         toNode: GraphNode,
         t: number
     ): { position: Vector3; forward: Vector3 } {
+        // GUARD: Validate node positions
+        if (!fromNode.pos || !toNode.pos) {
+            return {
+                position: new Vector3(0, 0, 0),
+                forward: new Vector3(0, 0, 1)
+            };
+        }
+
         if (edge.curve.type === 'straight') {
             return this.getStraightPosition(fromNode.pos, toNode.pos, t);
         } else {
@@ -275,8 +386,24 @@ export class TrackEdgeFinder {
         end: Vector3,
         t: number
     ): { position: Vector3; forward: Vector3 } {
+        // GUARD: Validate inputs
+        if (!start || !end) {
+            return {
+                position: new Vector3(0, 0, 0),
+                forward: new Vector3(0, 0, 1)
+            };
+        }
+
         const position = Vector3.Lerp(start, end, t);
-        const forward = end.subtract(start).normalize();
+        let forward = end.subtract(start);
+
+        // Handle zero-length
+        if (forward.length() < 0.0001) {
+            forward = new Vector3(0, 0, 1);
+        } else {
+            forward = forward.normalize();
+        }
+
         return { position, forward };
     }
 
@@ -289,97 +416,139 @@ export class TrackEdgeFinder {
         curve: CurveDefinition,
         t: number
     ): { position: Vector3; forward: Vector3 } {
+        // Fallback to straight if curve data incomplete
         if (!curve.arcRadiusM || !curve.arcAngleDeg) {
             return this.getStraightPosition(start, end, t);
         }
 
-        const radius = curve.arcRadiusM;
-        const angleDeg = curve.arcAngleDeg;
-        const direction = curve.arcDirection || 1;
+        // GUARD: Validate inputs
+        if (!start || !end) {
+            return {
+                position: new Vector3(0, 0, 0),
+                forward: new Vector3(0, 0, 1)
+            };
+        }
 
-        // Calculate arc center
-        const startToEnd = end.subtract(start);
-        const startDir = startToEnd.normalize();
+        try {
+            const radius = curve.arcRadiusM;
+            const angleDeg = curve.arcAngleDeg;
+            const direction = curve.arcDirection || 1;
 
-        // Perpendicular direction for center offset
-        const perpendicular = new Vector3(
-            -startDir.z * direction,
-            0,
-            startDir.x * direction
-        );
+            // Calculate arc center
+            const startToEnd = end.subtract(start);
 
-        // Arc center
-        const center = start.add(perpendicular.scale(radius));
+            // Handle zero-length
+            if (startToEnd.length() < 0.0001) {
+                return {
+                    position: start.clone(),
+                    forward: new Vector3(0, 0, 1)
+                };
+            }
 
-        // Calculate current angle
-        const totalAngleRad = (angleDeg * Math.PI) / 180;
-        const currentAngle = t * totalAngleRad * -direction;
+            const startDir = startToEnd.normalize();
 
-        // Rotate start point around center
-        const startVec = start.subtract(center);
-        const cosA = Math.cos(currentAngle);
-        const sinA = Math.sin(currentAngle);
+            // Perpendicular direction (left or right based on curve direction)
+            const perpendicular = new Vector3(
+                -startDir.z * direction,
+                0,
+                startDir.x * direction
+            );
 
-        const rotatedX = startVec.x * cosA - startVec.z * sinA;
-        const rotatedZ = startVec.x * sinA + startVec.z * cosA;
+            const center = start.add(perpendicular.scale(radius));
 
-        const position = new Vector3(
-            center.x + rotatedX,
-            start.y,
-            center.z + rotatedZ
-        );
+            // Calculate position on arc
+            const startAngle = Math.atan2(
+                start.x - center.x,
+                start.z - center.z
+            );
 
-        // Calculate tangent direction
-        const radiusVec = position.subtract(center).normalize();
-        const forward = new Vector3(
-            -radiusVec.z * direction,
-            0,
-            radiusVec.x * direction
-        ).normalize();
+            const angleRad = (angleDeg * Math.PI / 180) * direction;
+            const currentAngle = startAngle + angleRad * t;
 
-        return { position, forward };
+            const position = new Vector3(
+                center.x + radius * Math.sin(currentAngle),
+                start.y + (end.y - start.y) * t, // Linear height interpolation
+                center.z + radius * Math.cos(currentAngle)
+            );
+
+            // Calculate tangent (forward direction)
+            const tangentAngle = currentAngle + (Math.PI / 2) * direction;
+            const forward = new Vector3(
+                Math.sin(tangentAngle),
+                0,
+                Math.cos(tangentAngle)
+            ).normalize();
+
+            return { position, forward };
+
+        } catch (error) {
+            // Fallback on any error
+            return this.getStraightPosition(start, end, t);
+        }
     }
 
     // ========================================================================
-    // UTILITY METHODS
+    // PUBLIC UTILITY METHODS
     // ========================================================================
 
     /**
-     * Get world position for an edge and t value
+     * Get position on edge by edge ID
      * @param edgeId - Edge ID
      * @param t - Parametric position (0-1)
      * @returns Position and forward, or null if edge not found
      */
     getPositionOnEdgeById(edgeId: string, t: number): { position: Vector3; forward: Vector3 } | null {
-        const edge = this.graph.getEdge(edgeId);
-        if (!edge) return null;
+        try {
+            const edge = this.graph.getEdge(edgeId);
+            if (!edge) return null;
 
-        const fromNode = this.graph.getNode(edge.fromNodeId);
-        const toNode = this.graph.getNode(edge.toNodeId);
-        if (!fromNode || !toNode) return null;
+            const fromNode = this.graph.getNode(edge.fromNodeId);
+            const toNode = this.graph.getNode(edge.toNodeId);
+            if (!fromNode || !toNode) return null;
+            if (!fromNode.pos || !toNode.pos) return null;
 
-        return this.getPositionOnEdge(edge, fromNode, toNode, t);
+            return this.getPositionOnEdge(edge, fromNode, toNode, t);
+        } catch (error) {
+            return null;
+        }
     }
 
     /**
      * Find all edges within a radius of a position
+     * 
+     * SAFETY: Limited to MAX_EDGES_TO_SEARCH
+     * 
      * @param position - World position
      * @param radius - Search radius
      * @returns Array of edge find results, sorted by distance
      */
     findEdgesInRadius(position: Vector3, radius: number): EdgeFindResult[] {
         const results: EdgeFindResult[] = [];
-        const allEdges = this.graph.getAllEdges();
 
-        for (const edge of allEdges) {
-            const result = this.findClosestPointOnEdge(edge, position);
-            if (result && result.distance <= radius) {
-                results.push(result);
+        // GUARD: Validate position
+        if (!position) return results;
+
+        try {
+            const allEdges = this.graph.getAllEdges();
+            const edgesToSearch = allEdges.slice(0, MAX_EDGES_TO_SEARCH);
+
+            for (const edge of edgesToSearch) {
+                try {
+                    const result = this.findClosestPointOnEdge(edge, position);
+                    if (result && result.distance <= radius) {
+                        results.push(result);
+                    }
+                } catch (error) {
+                    continue;
+                }
             }
-        }
 
-        // Sort by distance
-        results.sort((a, b) => a.distance - b.distance);
+            // Sort by distance
+            results.sort((a, b) => a.distance - b.distance);
+
+        } catch (error) {
+            console.error(`${LOG_PREFIX} findEdgesInRadius error:`, error);
+        }
 
         return results;
     }
@@ -401,7 +570,11 @@ export class TrackEdgeFinder {
      * @returns Length in meters, or 0 if not found
      */
     getEdgeLength(edgeId: string): number {
-        const edge = this.graph.getEdge(edgeId);
-        return edge?.lengthM || 0;
+        try {
+            const edge = this.graph.getEdge(edgeId);
+            return edge?.lengthM || 0;
+        } catch (error) {
+            return 0;
+        }
     }
 }

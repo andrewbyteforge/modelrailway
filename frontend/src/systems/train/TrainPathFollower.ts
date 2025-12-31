@@ -10,12 +10,12 @@
  * - Supports both straight and curved track with proper arc mathematics
  * - Integrates with PointsManager for route selection at switches
  * 
- * The path follower doesn't know about physics - it just positions
- * based on a given distance to travel along the track.
+ * IMPORTANT: Trains are kept at a fixed Y height (rail surface) and only
+ * rotate around the Y axis to stay level on the track.
  * 
  * @module TrainPathFollower
  * @author Model Railway Workbench
- * @version 1.0.0
+ * @version 1.1.0
  */
 
 import { Vector3, Quaternion } from '@babylonjs/core/Maths/math.vector';
@@ -30,8 +30,11 @@ import type { PointsManager } from './PointsManager';
 /** Logging prefix */
 const LOG_PREFIX = '[TrainPathFollower]';
 
-/** Height of rail surface in meters (for positioning trains on top of track) */
-const RAIL_SURFACE_HEIGHT = 0.005; // 5mm above track base
+/** 
+ * Rail surface height above baseboard in meters
+ * Baseboard top is at 0.95m, rail top is ~8mm above that = 0.958m
+ */
+const RAIL_TOP_HEIGHT = 0.958;
 
 // ============================================================================
 // TYPE DEFINITIONS
@@ -97,6 +100,9 @@ export interface PathFollowerConfig {
 
     /** Whether to reverse model orientation when traveling backward on edge */
     flipOnReverse: boolean;
+
+    /** Fixed rail top height in meters (if 0, will use node Y positions) */
+    railTopHeight: number;
 }
 
 // ============================================================================
@@ -160,6 +166,7 @@ export class TrainPathFollower {
         this.config = {
             heightOffset: 0,
             flipOnReverse: true,
+            railTopHeight: RAIL_TOP_HEIGHT,
             ...config
         };
 
@@ -197,6 +204,7 @@ export class TrainPathFollower {
         this.worldPose = this.calculateWorldPose(edge, clampedT, edgeDirection);
 
         console.log(`${LOG_PREFIX} Placed on edge ${edgeId} at t=${clampedT.toFixed(3)}, dir=${edgeDirection}`);
+        console.log(`${LOG_PREFIX}   Position: (${this.worldPose.position.x.toFixed(3)}, ${this.worldPose.position.y.toFixed(3)}, ${this.worldPose.position.z.toFixed(3)})`);
         return true;
     }
 
@@ -249,114 +257,98 @@ export class TrainPathFollower {
     // ========================================================================
 
     /**
-     * Move along the track by a given distance
-     * @param distanceM - Distance to move in meters (positive = forward, negative = backward)
-     * @returns Movement result with new position and traversal info
+     * Move the train along the track by a given distance
+     * @param distanceM - Distance to move in meters (negative = backward)
+     * @returns Movement result with new position/pose
      */
     move(distanceM: number): MovementResult {
-        // Default result for error cases
-        const errorResult: MovementResult = {
-            trackPosition: this.trackPosition || { edgeId: '', t: 0, edgeDirection: 1 },
-            worldPose: this.worldPose || this.createDefaultPose(),
-            edgeChanged: false,
-            reachedDeadEnd: true,
-            traversedEdges: []
-        };
-
+        // Default result for when not on track
         if (!this.trackPosition) {
-            console.warn(`${LOG_PREFIX} Cannot move - not placed on track`);
-            return errorResult;
+            return {
+                trackPosition: { edgeId: '', t: 0, edgeDirection: 1 },
+                worldPose: this.createDefaultPose(),
+                edgeChanged: false,
+                reachedDeadEnd: false,
+                traversedEdges: []
+            };
         }
 
         const traversedEdges: string[] = [];
-        let currentEdgeId = this.trackPosition.edgeId;
-        let currentT = this.trackPosition.t;
-        let currentDirection = this.trackPosition.edgeDirection;
-        let remainingDistance = Math.abs(distanceM);
-        const movingForward = distanceM >= 0;
-
-        // Determine actual edge direction based on movement direction
-        let effectiveDirection = currentDirection;
-        if (!movingForward) {
-            effectiveDirection = (currentDirection * -1) as 1 | -1;
-        }
-
         let edgeChanged = false;
         let reachedDeadEnd = false;
-        let iterations = 0;
-        const maxIterations = 100; // Safety limit
+        let remainingDistance = distanceM;
 
-        while (remainingDistance > 0.0001 && iterations < maxIterations) {
-            iterations++;
+        // Get current edge
+        let currentEdge = this.graph.getEdge(this.trackPosition.edgeId);
+        if (!currentEdge) {
+            return {
+                trackPosition: this.trackPosition,
+                worldPose: this.worldPose || this.createDefaultPose(),
+                edgeChanged: false,
+                reachedDeadEnd: true,
+                traversedEdges: []
+            };
+        }
 
-            const edge = this.graph.getEdge(currentEdgeId);
-            if (!edge) {
-                console.error(`${LOG_PREFIX} Edge ${currentEdgeId} not found during move`);
-                reachedDeadEnd = true;
-                break;
-            }
+        // Copy current position for modification
+        let currentT = this.trackPosition.t;
+        let currentDirection = this.trackPosition.edgeDirection;
+        let currentEdgeId = this.trackPosition.edgeId;
 
-            // Calculate how far we can go on this edge
-            const edgeLength = edge.lengthM;
-            const currentDistanceAlongEdge = currentT * edgeLength;
-
+        // Move along track, handling edge transitions
+        while (Math.abs(remainingDistance) > 0.0001) {
+            // Calculate distance to edge end in current direction
+            const edgeLength = currentEdge.lengthM;
             let distanceToEnd: number;
-            let targetT: number;
 
-            if (effectiveDirection === 1) {
-                // Moving toward toNode (t increasing)
-                distanceToEnd = edgeLength - currentDistanceAlongEdge;
-                targetT = 1;
+            if (currentDirection === 1) {
+                // Traveling toward toNode (t=1)
+                distanceToEnd = (1 - currentT) * edgeLength;
             } else {
-                // Moving toward fromNode (t decreasing)
-                distanceToEnd = currentDistanceAlongEdge;
-                targetT = 0;
+                // Traveling toward fromNode (t=0)
+                distanceToEnd = currentT * edgeLength;
             }
 
-            if (remainingDistance <= distanceToEnd) {
-                // We can complete the move on this edge
-                const deltaT = remainingDistance / edgeLength;
-                if (effectiveDirection === 1) {
-                    currentT = currentT + deltaT;
-                } else {
-                    currentT = currentT - deltaT;
-                }
+            // Determine actual movement distance on this edge
+            const moveDirection = Math.sign(remainingDistance);
+            const actualMove = Math.min(Math.abs(remainingDistance), distanceToEnd);
+
+            // Update t based on movement
+            const deltaT = (actualMove / edgeLength) * currentDirection * moveDirection;
+            currentT += deltaT;
+
+            // Reduce remaining distance
+            remainingDistance -= actualMove * moveDirection;
+
+            // Check if we've reached edge end
+            if (currentT <= 0 || currentT >= 1) {
+                // Clamp t
                 currentT = Math.max(0, Math.min(1, currentT));
-                remainingDistance = 0;
-            } else {
-                // We need to transition to next edge
-                remainingDistance -= distanceToEnd;
-                currentT = targetT;
 
-                // Find next edge
-                const exitNodeId = effectiveDirection === 1 ? edge.toNodeId : edge.fromNodeId;
-                const nextEdgeInfo = this.findNextEdge(currentEdgeId, exitNodeId, effectiveDirection);
+                // Try to transition to next edge
+                const nodeId = currentDirection === 1 ? currentEdge.toNodeId : currentEdge.fromNodeId;
+                const nextEdgeInfo = this.getNextEdge(currentEdgeId, nodeId);
 
-                if (!nextEdgeInfo) {
-                    // Dead end
-                    console.log(`${LOG_PREFIX} Reached dead end at node ${exitNodeId}`);
+                if (nextEdgeInfo) {
+                    // Transition to next edge
+                    traversedEdges.push(currentEdgeId);
+                    currentEdgeId = nextEdgeInfo.edgeId;
+                    currentT = nextEdgeInfo.entryT;
+                    currentDirection = nextEdgeInfo.direction;
+                    edgeChanged = true;
+
+                    const nextEdge = this.graph.getEdge(currentEdgeId);
+                    if (!nextEdge) {
+                        reachedDeadEnd = true;
+                        break;
+                    }
+                    currentEdge = nextEdge;
+                } else {
+                    // Dead end - stop here
                     reachedDeadEnd = true;
                     break;
                 }
-
-                // Transition to next edge
-                traversedEdges.push(currentEdgeId);
-                currentEdgeId = nextEdgeInfo.edgeId;
-                currentT = nextEdgeInfo.entryT;
-                effectiveDirection = nextEdgeInfo.direction;
-                edgeChanged = true;
-
-                // Update the stored direction based on movement
-                if (movingForward) {
-                    currentDirection = effectiveDirection;
-                } else {
-                    currentDirection = (effectiveDirection * -1) as 1 | -1;
-                }
             }
-        }
-
-        if (iterations >= maxIterations) {
-            console.warn(`${LOG_PREFIX} Move exceeded max iterations`);
         }
 
         // Update stored position
@@ -367,41 +359,58 @@ export class TrainPathFollower {
         };
 
         // Calculate new world pose
-        const currentEdge = this.graph.getEdge(currentEdgeId);
-        if (currentEdge) {
-            this.worldPose = this.calculateWorldPose(currentEdge, currentT, currentDirection);
-        }
+        this.worldPose = this.calculateWorldPose(currentEdge, currentT, currentDirection);
 
         return {
             trackPosition: { ...this.trackPosition },
-            worldPose: this.worldPose || this.createDefaultPose(),
+            worldPose: { ...this.worldPose },
             edgeChanged,
             reachedDeadEnd,
             traversedEdges
         };
     }
 
+    /**
+     * Reverse the direction of travel
+     */
+    reverseDirection(): void {
+        if (!this.trackPosition) return;
+
+        this.trackPosition.edgeDirection *= -1;
+
+        // Recalculate pose with new direction
+        const edge = this.graph.getEdge(this.trackPosition.edgeId);
+        if (edge) {
+            this.worldPose = this.calculateWorldPose(
+                edge,
+                this.trackPosition.t,
+                this.trackPosition.edgeDirection
+            );
+        }
+    }
+
     // ========================================================================
-    // EDGE TRANSITIONS
+    // EDGE TRANSITION LOGIC
     // ========================================================================
 
     /**
-     * Find the next edge when leaving a node
-     * Uses PointsManager to determine route at switches
+     * Get next edge when transitioning at a node
      * @param fromEdgeId - Edge we're leaving
-     * @param nodeId - Node we're passing through
-     * @param travelDirection - Direction of travel on current edge
+     * @param nodeId - Node we're arriving at
      * @returns Next edge info or null if dead end
      */
-    private findNextEdge(
+    private getNextEdge(
         fromEdgeId: string,
-        nodeId: string,
-        travelDirection: 1 | -1
+        nodeId: string
     ): { edgeId: string; entryT: number; direction: 1 | -1 } | null {
-        // Get all edges connected to this node
-        const connectedEdges = this.graph.getEdgesConnectedToNode(nodeId);
+        const node = this.graph.getNode(nodeId);
+        if (!node) return null;
 
-        // Filter out the edge we came from
+        const fromEdge = this.graph.getEdge(fromEdgeId);
+        if (!fromEdge) return null;
+
+        // Get all edges at this node except the one we came from
+        const connectedEdges = this.graph.getEdgesConnectedToNode(nodeId);
         const candidates = connectedEdges.filter(e => e.id !== fromEdgeId);
 
         if (candidates.length === 0) {
@@ -409,28 +418,23 @@ export class TrainPathFollower {
             return null;
         }
 
+        // Select next edge
         let selectedEdge: GraphEdge;
 
         if (candidates.length === 1) {
-            // Simple continuation - only one option
+            // Only one option
             selectedEdge = candidates[0];
         } else {
-            // Multiple options - this is a switch/junction
-            // Use PointsManager to determine route
-            const fromEdge = this.graph.getEdge(fromEdgeId);
-            if (!fromEdge) {
-                selectedEdge = candidates[0];
-            } else {
-                const pieceId = fromEdge.pieceId;
-                const selectedEdgeId = this.pointsManager.getRouteForPiece(pieceId, fromEdgeId, nodeId);
+            // Multiple options - check points manager for route
+            const pieceId = fromEdge.pieceId;
+            const selectedEdgeId = this.pointsManager.getRouteForPiece(pieceId, fromEdgeId, nodeId);
 
-                if (selectedEdgeId) {
-                    const found = candidates.find(e => e.id === selectedEdgeId);
-                    selectedEdge = found || candidates[0];
-                } else {
-                    // Default to first candidate
-                    selectedEdge = candidates[0];
-                }
+            if (selectedEdgeId) {
+                const found = candidates.find(e => e.id === selectedEdgeId);
+                selectedEdge = found || candidates[0];
+            } else {
+                // Default to first candidate
+                selectedEdge = candidates[0];
             }
         }
 
@@ -461,6 +465,12 @@ export class TrainPathFollower {
 
     /**
      * Calculate world-space pose for a position on an edge
+     * 
+     * IMPORTANT: This ensures:
+     * 1. Y position is fixed at rail top height (train stays level)
+     * 2. Forward vector has Y=0 (rotation is only around Y axis)
+     * 3. No pitch or roll is applied to the train
+     * 
      * @param edge - The edge
      * @param t - Parametric position (0-1)
      * @param direction - Travel direction for orientation
@@ -475,41 +485,58 @@ export class TrainPathFollower {
             return this.createDefaultPose();
         }
 
-        let position: Vector3;
-        let forward: Vector3;
+        let positionXZ: { x: number; z: number };
+        let forwardXZ: { x: number; z: number };
 
         if (edge.curve.type === 'straight') {
-            // Straight track - simple linear interpolation
-            position = Vector3.Lerp(fromNode.pos, toNode.pos, t);
-            forward = toNode.pos.subtract(fromNode.pos).normalize();
+            // Straight track - simple linear interpolation (XZ only)
+            positionXZ = {
+                x: fromNode.pos.x + (toNode.pos.x - fromNode.pos.x) * t,
+                z: fromNode.pos.z + (toNode.pos.z - fromNode.pos.z) * t
+            };
+
+            // Forward direction (XZ only, normalized)
+            const dx = toNode.pos.x - fromNode.pos.x;
+            const dz = toNode.pos.z - fromNode.pos.z;
+            const len = Math.sqrt(dx * dx + dz * dz);
+            forwardXZ = {
+                x: len > 0 ? dx / len : 1,
+                z: len > 0 ? dz / len : 0
+            };
         } else {
             // Curved track - use arc mathematics
-            const result = this.calculateArcPosition(
-                fromNode.pos,
-                toNode.pos,
+            const result = this.calculateArcPositionXZ(
+                { x: fromNode.pos.x, z: fromNode.pos.z },
+                { x: toNode.pos.x, z: toNode.pos.z },
                 edge.curve,
                 t
             );
-            position = result.position;
-            forward = result.tangent;
+            positionXZ = result.position;
+            forwardXZ = result.tangent;
         }
 
-        // Add height offset for rail surface
-        position.y += RAIL_SURFACE_HEIGHT + this.config.heightOffset;
+        // Create position with FIXED Y at rail top height
+        const position = new Vector3(
+            positionXZ.x,
+            this.config.railTopHeight + this.config.heightOffset,
+            positionXZ.z
+        );
+
+        // Create forward vector with Y=0 (horizontal only)
+        let forward = new Vector3(forwardXZ.x, 0, forwardXZ.z).normalize();
 
         // Flip forward if traveling in reverse direction on edge
         if (direction === -1) {
             forward = forward.scale(-1);
         }
 
-        // Additionally flip if configured and we're reversing
-        // (This handles the train model facing backward when going in reverse)
-
         // Calculate right vector (perpendicular, horizontal)
         const right = Vector3.Cross(Vector3.Up(), forward).normalize();
 
-        // Calculate rotation quaternion
-        const rotation = Quaternion.FromLookDirectionLH(forward, Vector3.Up());
+        // Calculate rotation quaternion - ONLY around Y axis
+        // Using atan2 to get yaw angle from forward direction
+        const yawAngle = Math.atan2(forward.x, forward.z);
+        const rotation = Quaternion.RotationAxis(Vector3.Up(), yawAngle);
 
         return {
             position,
@@ -520,23 +547,32 @@ export class TrainPathFollower {
     }
 
     /**
-     * Calculate position and tangent on a curved track segment
-     * @param startPos - Start node position
-     * @param endPos - End node position
+     * Calculate position and tangent on a curved track segment (XZ plane only)
+     * @param startPos - Start node position (x, z)
+     * @param endPos - End node position (x, z)
      * @param curve - Curve definition
      * @param t - Parametric position (0-1)
-     * @returns Position and tangent vector
+     * @returns Position and tangent in XZ plane
      */
-    private calculateArcPosition(
-        startPos: Vector3,
-        endPos: Vector3,
+    private calculateArcPositionXZ(
+        startPos: { x: number; z: number },
+        endPos: { x: number; z: number },
         curve: CurveDefinition,
         t: number
-    ): { position: Vector3; tangent: Vector3 } {
+    ): { position: { x: number; z: number }; tangent: { x: number; z: number } } {
         if (!curve.arcRadiusM || !curve.arcAngleDeg) {
             // Fallback to straight
-            const position = Vector3.Lerp(startPos, endPos, t);
-            const tangent = endPos.subtract(startPos).normalize();
+            const position = {
+                x: startPos.x + (endPos.x - startPos.x) * t,
+                z: startPos.z + (endPos.z - startPos.z) * t
+            };
+            const dx = endPos.x - startPos.x;
+            const dz = endPos.z - startPos.z;
+            const len = Math.sqrt(dx * dx + dz * dz);
+            const tangent = {
+                x: len > 0 ? dx / len : 1,
+                z: len > 0 ? dz / len : 0
+            };
             return { position, tangent };
         }
 
@@ -545,50 +581,61 @@ export class TrainPathFollower {
         const direction = curve.arcDirection || 1;
 
         // Calculate arc center
-        // The center is perpendicular to the start direction at distance = radius
-        const startToEnd = endPos.subtract(startPos);
-        const startDir = startToEnd.normalize();
+        const dx = endPos.x - startPos.x;
+        const dz = endPos.z - startPos.z;
+        const len = Math.sqrt(dx * dx + dz * dz);
+        const startDirX = len > 0 ? dx / len : 1;
+        const startDirZ = len > 0 ? dz / len : 0;
 
         // Perpendicular direction (left or right based on curve direction)
-        const perpendicular = new Vector3(
-            -startDir.z * direction,
-            0,
-            startDir.x * direction
-        );
+        const perpX = -startDirZ * direction;
+        const perpZ = startDirX * direction;
 
         // Arc center
-        const center = startPos.add(perpendicular.scale(radius));
+        const centerX = startPos.x + perpX * radius;
+        const centerZ = startPos.z + perpZ * radius;
 
         // Calculate angle for this t value
         const totalAngleRad = (angleDeg * Math.PI) / 180;
-        const currentAngle = t * totalAngleRad * -direction; // Negative for correct rotation
+        const currentAngle = t * totalAngleRad * -direction;
 
         // Starting vector from center to start position
-        const startVec = startPos.subtract(center);
+        const startVecX = startPos.x - centerX;
+        const startVecZ = startPos.z - centerZ;
 
         // Rotate around Y axis
         const cosA = Math.cos(currentAngle);
         const sinA = Math.sin(currentAngle);
 
-        const rotatedX = startVec.x * cosA - startVec.z * sinA;
-        const rotatedZ = startVec.x * sinA + startVec.z * cosA;
+        const rotatedX = startVecX * cosA - startVecZ * sinA;
+        const rotatedZ = startVecX * sinA + startVecZ * cosA;
 
         // Calculate position
-        const position = new Vector3(
-            center.x + rotatedX,
-            startPos.y, // Keep Y level
-            center.z + rotatedZ
-        );
+        const position = {
+            x: centerX + rotatedX,
+            z: centerZ + rotatedZ
+        };
 
         // Calculate tangent (perpendicular to radius, in direction of travel)
-        const radiusVec = position.subtract(center).normalize();
-        const tangent = new Vector3(
-            -radiusVec.z * direction,
-            0,
-            radiusVec.x * direction
-        );
+        const radiusVecX = position.x - centerX;
+        const radiusVecZ = position.z - centerZ;
+        const radiusLen = Math.sqrt(radiusVecX * radiusVecX + radiusVecZ * radiusVecZ);
+        const radiusNormX = radiusLen > 0 ? radiusVecX / radiusLen : 0;
+        const radiusNormZ = radiusLen > 0 ? radiusVecZ / radiusLen : 1;
 
-        return { position, tangent: tangent.normalize() };
+        const tangent = {
+            x: -radiusNormZ * direction,
+            z: radiusNormX * direction
+        };
+
+        // Normalize tangent
+        const tangentLen = Math.sqrt(tangent.x * tangent.x + tangent.z * tangent.z);
+        if (tangentLen > 0) {
+            tangent.x /= tangentLen;
+            tangent.z /= tangentLen;
+        }
+
+        return { position, tangent };
     }
 
     /**
@@ -597,10 +644,10 @@ export class TrainPathFollower {
      */
     private createDefaultPose(): WorldPose {
         return {
-            position: Vector3.Zero(),
-            forward: new Vector3(1, 0, 0),
+            position: new Vector3(0, this.config.railTopHeight, 0),
+            forward: new Vector3(0, 0, 1),
             rotation: Quaternion.Identity(),
-            right: new Vector3(0, 0, 1)
+            right: new Vector3(1, 0, 0)
         };
     }
 
@@ -658,5 +705,26 @@ export class TrainPathFollower {
             // Traveling toward fromNode
             return edge.lengthM * this.trackPosition.t;
         }
+    }
+
+    // ========================================================================
+    // CONFIGURATION
+    // ========================================================================
+
+    /**
+     * Set the rail top height
+     * @param height - Height in meters
+     */
+    setRailTopHeight(height: number): void {
+        this.config.railTopHeight = height;
+        console.log(`${LOG_PREFIX} Rail top height set to ${height.toFixed(4)}m`);
+    }
+
+    /**
+     * Set height offset above rail
+     * @param offset - Offset in meters
+     */
+    setHeightOffset(offset: number): void {
+        this.config.heightOffset = offset;
     }
 }

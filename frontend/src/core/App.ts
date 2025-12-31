@@ -39,6 +39,16 @@ import { RightSidebar } from '../ui/panels/RightSidebar';
 // ============================================================================
 import { TrainSystem } from '../systems/train/TrainSystem';
 import { TrainControlPanel } from '../ui/TrainControlPanel';
+import { TrainIntegration, createGlobalHelpers } from '../systems/train/TrainIntegration';
+
+// ============================================================================
+// TRAIN MESH DETECTOR - For cross-system train detection
+// Enables: Click = DRIVING, Shift+Click = REPOSITIONING
+// ============================================================================
+import {
+    registerTrainSystem,
+    unregisterTrainSystem
+} from '../systems/train/TrainMeshDetector';
 
 // ============================================================================
 // TRANSFORM CONTROLS IMPORT
@@ -84,6 +94,7 @@ export class App {
     // ========================================================================
     private trainSystem: TrainSystem | null = null;
     private trainControlPanel: TrainControlPanel | null = null;
+    private trainIntegration: TrainIntegration | null = null;
 
     // ========================================================================
     // TRANSFORM CONTROLS PROPERTY
@@ -170,13 +181,42 @@ export class App {
             });
             this.trainSystem.initialize();
 
+            this.connectCameraAndTrainSystems();
+
+            
+
+            // ================================================================
+            // REGISTER TRAIN SYSTEM WITH MESH DETECTOR
+            // This enables ModelImportButton to detect train clicks and
+            // differentiate between:
+            //   - Click = Select for DRIVING (keyboard controls)
+            //   - Shift+Click = Select for REPOSITIONING (drag to move)
+            // ================================================================
+            registerTrainSystem(this.trainSystem);
+            console.log('[App] ✓ TrainSystem registered with TrainMeshDetector');
+
             // Create control panel UI
             this.trainControlPanel = new TrainControlPanel(this.trainSystem);
             this.trainControlPanel.initialize();
 
+            // ================================================================
+            // INITIALIZE TRAIN INTEGRATION (auto-registers trains when placed)
+            // ================================================================
+            this.trainIntegration = new TrainIntegration(
+                this.scene,
+                this.trainSystem,
+                this.trackSystem.getGraph()
+            );
+
+            // Expose to window for debugging (can be removed in production)
             // Expose to window for debugging (can be removed in production)
             (window as any).trainSystem = this.trainSystem;
+            (window as any).trainIntegration = this.trainIntegration;
+            (window as any).trackSystem = this.trackSystem;  // ← ADD THIS LINE
             (window as any).scene = this.scene;
+
+            // Install global helper functions for console debugging
+            createGlobalHelpers(this.scene, this.trainSystem, this.trackSystem.getGraph());
 
             console.log('[App] ✓ Train system initialized');
 
@@ -353,7 +393,8 @@ export class App {
             console.log('');
             console.log('=== Train Controls ===');
             console.log('  Shift+T → Register train models');
-            console.log('  Click train → Select for control');
+            console.log('  Click train → Select for DRIVING');
+            console.log('  Shift+Click train → Select for REPOSITIONING');
             console.log('  ↑/W → Increase throttle');
             console.log('  ↓/S → Decrease throttle');
             console.log('  R → Toggle direction (when train selected)');
@@ -378,6 +419,35 @@ export class App {
             console.error('[App] Initialization error:', error);
             throw error;
         }
+    }
+
+
+
+
+
+    private connectCameraAndTrainSystems(): void {
+        if (!this.cameraSystem || !this.trainSystem) {
+            console.warn('[App] Cannot connect camera/train - one or both systems not initialized');
+            return;
+        }
+
+        // Tell camera system to check if a train is selected before processing WASD
+        this.cameraSystem.setShouldBlockMovement(() => {
+            // Block camera WASD when a train is selected
+            const hasSelectedTrain = this.trainSystem?.hasSelectedTrain() ?? false;
+
+            if (hasSelectedTrain) {
+                // Train is selected - WASD controls throttle, not camera
+                return true;
+            }
+
+            // No train selected - camera can use WASD
+            return false;
+        });
+
+        console.log('[App] ✓ Camera/Train input coordination connected');
+        console.log('  → WASD controls camera when no train selected');
+        console.log('  → WASD controls throttle when train selected');
     }
 
     // ========================================================================
@@ -1362,7 +1432,8 @@ export class App {
                         case 'Escape':
                             // First priority: deselect any selected train
                             if (this.trainSystem?.getSelectedTrain()) {
-                                this.trainSystem.deselectAll();
+                                // FIXED: was deselectAll() which doesn't exist
+                                this.trainSystem.deselectTrain();
                                 console.log('[App] Train deselected');
                             }
                             // Second priority: deselect any selected track
@@ -1433,11 +1504,25 @@ export class App {
                             // T alone = Place test tracks
                             if (shiftKey && this.trainSystem) {
                                 console.log('[App] Scanning for train models...');
+
+                                // First, try the train system's built-in scan
                                 const count = this.trainSystem.scanAndRegisterTrains();
+
                                 if (count === 0) {
-                                    console.log('[App] No new trains found.');
-                                    console.log('[App] Tip: Model names should contain "train", "loco", "class", "coach", etc.');
-                                    console.log('[App] Or manually register with: trainSystem.registerExistingModel(meshNode, "Name")');
+                                    console.log('[App] No trains found via keyword scan.');
+
+                                    // Show potential candidates
+                                    if (this.trainIntegration) {
+                                        this.trainIntegration.debugListPotentialTrains();
+                                    }
+
+                                    console.log('[App] Tips:');
+                                    console.log('  1. Model names should contain: train, loco, class, coach, wagon, etc.');
+                                    console.log('  2. Models must be near track (within 150mm)');
+                                    console.log('  3. Use console: registerTrain("meshName", "Display Name")');
+                                    console.log('  4. Or: trainIntegration.autoRegister(meshNode, { forceRegister: true })');
+                                } else {
+                                    console.log(`[App] ✓ Registered ${count} train(s). Click to select, use controls to move.`);
                                 }
                             } else if (!shiftKey) {
                                 this.placeTestTracks();
@@ -1626,6 +1711,10 @@ export class App {
         return this.trainSystem;
     }
 
+    getTrainIntegration(): TrainIntegration | null {
+        return this.trainIntegration;
+    }
+
     // ========================================================================
     // CLEANUP
     // ========================================================================
@@ -1644,6 +1733,16 @@ export class App {
                 this.highlightLayer = null;
             }
 
+            // ================================================================
+            // UNREGISTER TRAIN SYSTEM FROM MESH DETECTOR
+            // Must be done before disposing train system
+            // ================================================================
+            unregisterTrainSystem();
+
+            // Clear window flags for train selection
+            (window as any).__trainSelected = false;
+            (window as any).__selectedTrainId = null;
+
             // Dispose Train System
             if (this.trainControlPanel) {
                 this.trainControlPanel.dispose();
@@ -1653,6 +1752,7 @@ export class App {
                 this.trainSystem.dispose();
                 this.trainSystem = null;
             }
+            this.trainIntegration = null;
 
             // Dispose World Outliner
             if (this.rightSidebar) this.rightSidebar.dispose();

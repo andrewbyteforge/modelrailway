@@ -9,86 +9,27 @@
  * - Settings toggles (including Model Scale controls)
  * - Keyboard shortcuts reference
  * 
+ * Styles and types are imported from UIManagerStyles.ts
+ * 
  * @module UIManager
  * @author Model Railway Workbench
- * @version 2.2.0 - Added embedded scale controls
+ * @version 2.2.0 - Refactored with separate styles module
  */
 
 import { TrackCatalog, type TrackCatalogEntry } from '../systems/track/TrackCatalog';
+import {
+    type TrackSelectionCallback,
+    type ToggleCallback,
+    type ImportCallback,
+    type AccordionSection,
+    THEME,
+    injectUIManagerStyles,
+    KEYBOARD_SHORTCUTS,
+    MODE_ICONS
+} from './UIManagerStyles';
 
-// ============================================================================
-// TYPE DEFINITIONS
-// ============================================================================
-
-/** Callback when track piece is selected */
-export type TrackSelectionCallback = (catalogId: string) => void;
-
-/** Callback for toggle state changes */
-export type ToggleCallback = (enabled: boolean) => void;
-
-/** Callback for import button */
-export type ImportCallback = () => void;
-
-/** Accordion section state */
-interface AccordionSection {
-    header: HTMLElement;
-    content: HTMLElement;
-    isExpanded: boolean;
-}
-
-// ============================================================================
-// DESIGN TOKENS
-// ============================================================================
-
-const THEME = {
-    // Core colors
-    primary: '#2c3e50',
-    primaryLight: '#34495e',
-    primaryDark: '#1a252f',
-    accent: '#3498db',
-    accentHover: '#2980b9',
-    success: '#27ae60',
-    warning: '#f39c12',
-
-    // Background colors
-    bgDark: '#1e272e',
-    bgMedium: '#2d3436',
-    bgLight: '#636e72',
-    bgLighter: '#b2bec3',
-    bgWhite: '#ffffff',
-    bgOffWhite: '#f8f9fa',
-    bgHover: '#dfe6e9',
-
-    // Text colors
-    textLight: '#ffffff',
-    textMuted: '#b2bec3',
-    textDark: '#2d3436',
-    textMedium: '#636e72',
-
-    // Borders
-    borderLight: '#dfe6e9',
-    borderMedium: '#b2bec3',
-    borderDark: '#636e72',
-
-    // Shadows
-    shadowSm: '0 2px 4px rgba(0,0,0,0.1)',
-    shadowMd: '0 4px 12px rgba(0,0,0,0.15)',
-    shadowLg: '0 8px 24px rgba(0,0,0,0.2)',
-    shadowXl: '0 12px 48px rgba(0,0,0,0.3)',
-
-    // Transitions
-    transitionFast: '0.15s ease',
-    transitionMedium: '0.25s ease',
-    transitionSlow: '0.35s ease',
-
-    // Sizing
-    sidebarWidth: '320px',
-    sidebarCollapsedWidth: '0px',
-    toggleButtonWidth: '32px',
-    toggleButtonHeight: '80px',
-    borderRadius: '8px',
-    borderRadiusLg: '12px',
-} as const;
+// Re-export types for external use
+export type { TrackSelectionCallback, ToggleCallback, ImportCallback };
 
 // ============================================================================
 // UI MANAGER CLASS
@@ -109,6 +50,7 @@ export class UIManager {
     // PRIVATE PROPERTIES
     // ========================================================================
 
+    /** Container element for the UI */
     private container: HTMLElement;
 
     // Main UI elements
@@ -146,6 +88,11 @@ export class UIManager {
     // CONSTRUCTOR & INITIALIZATION
     // ========================================================================
 
+    /**
+     * Create a new UIManager
+     * @param container - Container element for the UI
+     * @throws Error if container is not provided
+     */
     constructor(container: HTMLElement) {
         if (!container) {
             throw new Error('[UIManager] Container element is required');
@@ -156,11 +103,12 @@ export class UIManager {
 
     /**
      * Initialize the UI
+     * @param onTrackSelected - Callback when a track piece is selected
      */
     initialize(onTrackSelected: TrackSelectionCallback): void {
         try {
             this.onTrackSelected = onTrackSelected;
-            this.injectStyles();
+            injectUIManagerStyles();
             this.createOverlay();
             this.createSidebar();
             this.createToggleButton();
@@ -172,6 +120,7 @@ export class UIManager {
 
     /**
      * Set import button callback
+     * @param callback - Function to call when import button is clicked
      */
     setImportCallback(callback: ImportCallback): void {
         this.onImportClicked = callback;
@@ -210,9 +159,6 @@ export class UIManager {
         console.log('[UIManager] ✓ Scale controls added to settings');
     }
 
-
-
-
     /**
      * Add transform controls element to the Settings section
      * @param element - The transform controls HTML element
@@ -242,478 +188,12 @@ export class UIManager {
     }
 
     // ========================================================================
-    // STYLE INJECTION
+    // UI CREATION - OVERLAY & TOGGLE
     // ========================================================================
 
-    private injectStyles(): void {
-        const styleId = 'uimanager-styles-v2';
-        if (document.getElementById(styleId)) return;
-
-        const style = document.createElement('style');
-        style.id = styleId;
-        style.textContent = `
-            /* ============================================
-               SIDEBAR BASE
-               ============================================ */
-            .mrw-sidebar {
-                position: fixed;
-                top: 0;
-                right: 0;
-                width: ${THEME.sidebarWidth};
-                height: 100vh;
-                background: linear-gradient(180deg, ${THEME.bgDark} 0%, ${THEME.primaryDark} 100%);
-                box-shadow: ${THEME.shadowXl};
-                z-index: 1000;
-                display: flex;
-                flex-direction: column;
-                transform: translateX(0);
-                transition: transform ${THEME.transitionMedium};
-                font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif;
-            }
-            
-            .mrw-sidebar.collapsed {
-                transform: translateX(100%);
-            }
-            
-            /* ============================================
-               TOGGLE BUTTON - Text Label Style
-               ============================================ */
-            .mrw-toggle-btn {
-                position: fixed;
-                top: 50%;
-                right: ${THEME.sidebarWidth};
-                transform: translateY(-50%);
-                width: ${THEME.toggleButtonWidth};
-                height: ${THEME.toggleButtonHeight};
-                background: ${THEME.primary};
-                border: none;
-                border-radius: ${THEME.borderRadius} 0 0 ${THEME.borderRadius};
-                cursor: pointer;
-                display: flex;
-                align-items: center;
-                justify-content: center;
-                box-shadow: ${THEME.shadowMd};
-                transition: all ${THEME.transitionMedium};
-                z-index: 1001;
-                padding: 8px 4px;
-            }
-            
-            .mrw-toggle-btn:hover {
-                background: ${THEME.primaryLight};
-                width: 38px;
-            }
-            
-            .mrw-toggle-btn.sidebar-collapsed {
-                right: 0;
-            }
-            
-            .mrw-toggle-btn .toggle-label {
-                writing-mode: vertical-rl;
-                text-orientation: mixed;
-                transform: rotate(180deg);
-                font-size: 12px;
-                font-weight: 600;
-                color: ${THEME.textLight};
-                letter-spacing: 1px;
-                text-transform: uppercase;
-            }
-            
-            /* ============================================
-               OVERLAY
-               ============================================ */
-            .mrw-overlay {
-                position: fixed;
-                top: 0;
-                left: 0;
-                width: 100%;
-                height: 100%;
-                background: rgba(0,0,0,0.3);
-                opacity: 0;
-                visibility: hidden;
-                transition: all ${THEME.transitionMedium};
-                z-index: 999;
-            }
-            
-            .mrw-overlay.visible {
-                opacity: 1;
-                visibility: visible;
-            }
-            
-            /* ============================================
-               HEADER
-               ============================================ */
-            .mrw-header {
-                padding: 20px;
-                background: linear-gradient(135deg, ${THEME.primary} 0%, ${THEME.primaryDark} 100%);
-                border-bottom: 1px solid rgba(255,255,255,0.1);
-                flex-shrink: 0;
-            }
-            
-            .mrw-header-title {
-                display: flex;
-                align-items: center;
-                gap: 12px;
-                color: ${THEME.textLight};
-                font-size: 18px;
-                font-weight: 600;
-                margin: 0;
-            }
-            
-            .mrw-header-title .icon {
-                font-size: 24px;
-            }
-            
-            .mrw-header-subtitle {
-                color: ${THEME.textMuted};
-                font-size: 12px;
-                margin-top: 4px;
-                margin-left: 36px;
-            }
-            
-            /* ============================================
-               SCROLLABLE CONTENT
-               ============================================ */
-            .mrw-content {
-                flex: 1;
-                overflow-y: auto;
-                overflow-x: hidden;
-            }
-            
-            .mrw-content::-webkit-scrollbar {
-                width: 6px;
-            }
-            
-            .mrw-content::-webkit-scrollbar-track {
-                background: transparent;
-            }
-            
-            .mrw-content::-webkit-scrollbar-thumb {
-                background: ${THEME.bgLight};
-                border-radius: 3px;
-            }
-            
-            .mrw-content::-webkit-scrollbar-thumb:hover {
-                background: ${THEME.bgLighter};
-            }
-            
-            /* ============================================
-               SECTIONS
-               ============================================ */
-            .mrw-section {
-                border-bottom: 1px solid rgba(255,255,255,0.05);
-            }
-            
-            .mrw-section-header {
-                display: flex;
-                align-items: center;
-                justify-content: space-between;
-                padding: 14px 20px;
-                background: rgba(0,0,0,0.2);
-                cursor: pointer;
-                transition: background ${THEME.transitionFast};
-            }
-            
-            .mrw-section-header:hover {
-                background: rgba(0,0,0,0.3);
-            }
-            
-            .mrw-section-title {
-                display: flex;
-                align-items: center;
-                gap: 10px;
-                color: ${THEME.textLight};
-                font-weight: 600;
-                font-size: 13px;
-            }
-            
-            .mrw-section-title .icon {
-                font-size: 16px;
-                opacity: 0.8;
-            }
-            
-            .mrw-section-arrow {
-                color: ${THEME.textMuted};
-                font-size: 10px;
-                transition: transform ${THEME.transitionFast};
-            }
-            
-            .mrw-section-arrow.collapsed {
-                transform: rotate(-90deg);
-            }
-            
-            .mrw-section-content {
-                padding: 0 20px;
-                overflow: hidden;
-                transition: max-height ${THEME.transitionMedium}, padding ${THEME.transitionMedium};
-            }
-            
-            .mrw-section-content.collapsed {
-                max-height: 0 !important;
-                padding-top: 0;
-                padding-bottom: 0;
-            }
-            
-            .mrw-section-content.expanded {
-                padding: 16px 20px;
-            }
-            
-            /* ============================================
-               IMPORT SECTION
-               ============================================ */
-            .mrw-import-section {
-                padding: 16px 20px;
-                border-bottom: 1px solid rgba(255,255,255,0.05);
-            }
-            
-            .mrw-import-btn {
-                width: 100%;
-                padding: 12px 16px;
-                display: flex;
-                align-items: center;
-                justify-content: center;
-                gap: 10px;
-                background: linear-gradient(135deg, ${THEME.success} 0%, #219a52 100%);
-                border: none;
-                border-radius: ${THEME.borderRadius};
-                color: white;
-                font-size: 14px;
-                font-weight: 600;
-                cursor: pointer;
-                transition: all ${THEME.transitionFast};
-                box-shadow: 0 2px 8px rgba(39, 174, 96, 0.3);
-            }
-            
-            .mrw-import-btn:hover {
-                transform: translateY(-1px);
-                box-shadow: 0 4px 12px rgba(39, 174, 96, 0.4);
-            }
-            
-            .mrw-import-btn:active {
-                transform: translateY(0);
-            }
-            
-            .mrw-import-btn .icon {
-                font-size: 18px;
-            }
-            
-            /* ============================================
-               TRACK BUTTONS
-               ============================================ */
-            .mrw-track-btn {
-                width: 100%;
-                padding: 10px 12px;
-                display: flex;
-                align-items: center;
-                gap: 12px;
-                background: rgba(255,255,255,0.05);
-                border: 1px solid transparent;
-                border-radius: 6px;
-                color: ${THEME.textLight};
-                font-size: 13px;
-                cursor: pointer;
-                transition: all ${THEME.transitionFast};
-                margin-bottom: 6px;
-                text-align: left;
-            }
-            
-            .mrw-track-btn:last-child {
-                margin-bottom: 0;
-            }
-            
-            .mrw-track-btn:hover {
-                background: rgba(255,255,255,0.1);
-                border-color: rgba(255,255,255,0.1);
-            }
-            
-            .mrw-track-btn.selected {
-                background: rgba(52, 152, 219, 0.3);
-                border-color: ${THEME.accent};
-            }
-            
-            .mrw-track-btn .track-icon {
-                width: 28px;
-                height: 28px;
-                display: flex;
-                align-items: center;
-                justify-content: center;
-                background: rgba(0,0,0,0.3);
-                border-radius: 6px;
-                font-size: 16px;
-            }
-            
-            .mrw-track-btn .track-info {
-                flex: 1;
-                min-width: 0;
-            }
-            
-            .mrw-track-btn .track-name {
-                font-weight: 500;
-                margin-bottom: 2px;
-            }
-            
-            .mrw-track-btn .track-id {
-                font-size: 10px;
-                color: ${THEME.textMuted};
-                font-family: 'Monaco', 'Consolas', monospace;
-            }
-            
-            /* ============================================
-               TOGGLE SWITCHES
-               ============================================ */
-            .mrw-toggle-row {
-                display: flex;
-                align-items: center;
-                justify-content: space-between;
-                padding: 10px 0;
-                border-bottom: 1px solid rgba(255,255,255,0.05);
-            }
-            
-            .mrw-toggle-row:last-child {
-                border-bottom: none;
-            }
-            
-            .mrw-toggle-label {
-                display: flex;
-                align-items: center;
-                gap: 8px;
-                color: ${THEME.textLight};
-                font-size: 13px;
-            }
-            
-            .mrw-toggle-label .icon {
-                font-size: 14px;
-                opacity: 0.7;
-            }
-            
-            .mrw-toggle-switch {
-                position: relative;
-                width: 44px;
-                height: 24px;
-                background: ${THEME.bgLight};
-                border: none;
-                border-radius: 12px;
-                cursor: pointer;
-                transition: background ${THEME.transitionFast};
-                padding: 0;
-            }
-            
-            .mrw-toggle-switch:hover {
-                background: ${THEME.bgLighter};
-            }
-            
-            .mrw-toggle-switch.active {
-                background: ${THEME.success};
-            }
-            
-            .mrw-toggle-switch .knob {
-                position: absolute;
-                top: 3px;
-                left: 3px;
-                width: 18px;
-                height: 18px;
-                background: white;
-                border-radius: 50%;
-                transition: transform ${THEME.transitionFast};
-                box-shadow: 0 1px 3px rgba(0,0,0,0.3);
-            }
-            
-            .mrw-toggle-switch.active .knob {
-                transform: translateX(20px);
-            }
-            
-            /* ============================================
-               KEYBOARD SHORTCUTS
-               ============================================ */
-            .mrw-shortcut-row {
-                display: flex;
-                align-items: center;
-                justify-content: space-between;
-                padding: 8px 0;
-                border-bottom: 1px solid rgba(255,255,255,0.05);
-            }
-            
-            .mrw-shortcut-row:last-child {
-                border-bottom: none;
-            }
-            
-            .mrw-shortcut-key {
-                display: flex;
-                align-items: center;
-                gap: 4px;
-            }
-            
-            .mrw-shortcut-key kbd {
-                display: inline-block;
-                padding: 3px 6px;
-                background: ${THEME.bgMedium};
-                border: 1px solid ${THEME.bgLight};
-                border-radius: 4px;
-                font-size: 11px;
-                color: ${THEME.textLight};
-                box-shadow: 0 2px 0 rgba(0,0,0,0.2);
-            }
-            
-            .mrw-shortcut-desc {
-                color: ${THEME.textMuted};
-                font-size: 12px;
-            }
-            
-            /* ============================================
-               FOOTER
-               ============================================ */
-            .mrw-footer {
-                padding: 16px 20px;
-                background: rgba(0,0,0,0.3);
-                border-top: 1px solid rgba(255,255,255,0.05);
-                flex-shrink: 0;
-            }
-            
-            .mrw-mode-indicator {
-                display: flex;
-                align-items: center;
-                gap: 10px;
-                color: ${THEME.textLight};
-                font-size: 13px;
-            }
-            
-            .mrw-mode-indicator .icon {
-                font-size: 18px;
-            }
-            
-            .mrw-mode-indicator .mode-text {
-                font-weight: 600;
-            }
-            
-            .mrw-mode-indicator .mode-hint {
-                font-size: 11px;
-                color: ${THEME.textMuted};
-                margin-top: 2px;
-            }
-            
-            /* ============================================
-               RESPONSIVE
-               ============================================ */
-            @media (max-width: 768px) {
-                .mrw-sidebar {
-                    width: 100%;
-                }
-                
-                .mrw-toggle-btn {
-                    right: 0;
-                }
-                
-                .mrw-toggle-btn:not(.sidebar-collapsed) {
-                    right: calc(100% - ${THEME.toggleButtonWidth});
-                }
-            }
-        `;
-        document.head.appendChild(style);
-    }
-
-    // ========================================================================
-    // UI CREATION
-    // ========================================================================
-
+    /**
+     * Create the overlay element for mobile/tablet sidebar backdrop
+     */
     private createOverlay(): void {
         this.overlay = document.createElement('div');
         this.overlay.className = 'mrw-overlay';
@@ -738,6 +218,13 @@ export class UIManager {
         this.container.appendChild(this.toggleButton);
     }
 
+    // ========================================================================
+    // UI CREATION - SIDEBAR
+    // ========================================================================
+
+    /**
+     * Create the main sidebar structure
+     */
     private createSidebar(): void {
         this.sidebar = document.createElement('div');
         this.sidebar.className = 'mrw-sidebar';
@@ -772,6 +259,10 @@ export class UIManager {
         this.container.appendChild(this.sidebar);
     }
 
+    /**
+     * Create the header element
+     * @returns Header HTML element
+     */
     private createHeader(): HTMLElement {
         const header = document.createElement('div');
         header.className = 'mrw-header';
@@ -785,6 +276,10 @@ export class UIManager {
         return header;
     }
 
+    /**
+     * Create the import button section
+     * @returns Import section HTML element
+     */
     private createImportSection(): HTMLElement {
         const section = document.createElement('div');
         section.className = 'mrw-import-section';
@@ -806,6 +301,14 @@ export class UIManager {
         return section;
     }
 
+    // ========================================================================
+    // UI CREATION - TRACK SECTIONS
+    // ========================================================================
+
+    /**
+     * Create all track category sections
+     * @param container - Container to append sections to
+     */
     private createTrackSections(container: HTMLElement): void {
         // Group tracks by category
         const categories = [
@@ -827,6 +330,15 @@ export class UIManager {
         });
     }
 
+    /**
+     * Create a single track category section
+     * @param id - Section ID
+     * @param title - Section title
+     * @param icon - Section icon
+     * @param pieces - Track pieces in this category
+     * @param startExpanded - Whether section starts expanded
+     * @returns Section HTML element
+     */
     private createTrackSection(
         id: string,
         title: string,
@@ -873,6 +385,11 @@ export class UIManager {
         return section;
     }
 
+    /**
+     * Create a track piece button
+     * @param piece - Track catalog entry
+     * @returns Button HTML element
+     */
     private createTrackButton(piece: TrackCatalogEntry): HTMLButtonElement {
         const button = document.createElement('button');
         button.className = 'mrw-track-btn';
@@ -894,6 +411,11 @@ export class UIManager {
         return button;
     }
 
+    /**
+     * Get icon for track type
+     * @param type - Track type string
+     * @returns Icon character
+     */
     private getTrackIcon(type: string): string {
         const icons: Record<string, string> = {
             straight: '━',
@@ -905,6 +427,14 @@ export class UIManager {
         return icons[type] || '•';
     }
 
+    // ========================================================================
+    // UI CREATION - SETTINGS SECTION
+    // ========================================================================
+
+    /**
+     * Create the settings section with toggles
+     * @returns Settings section HTML element
+     */
     private createSettingsSection(): HTMLElement {
         const section = document.createElement('div');
         section.className = 'mrw-section';
@@ -947,6 +477,14 @@ export class UIManager {
         return section;
     }
 
+    /**
+     * Create a toggle switch row
+     * @param id - Toggle ID
+     * @param icon - Toggle icon
+     * @param label - Toggle label text
+     * @param defaultState - Default toggle state
+     * @returns Toggle row HTML element
+     */
     private createToggle(id: string, icon: string, label: string, defaultState: boolean): HTMLElement {
         const row = document.createElement('div');
         row.className = 'mrw-toggle-row';
@@ -977,6 +515,14 @@ export class UIManager {
         return row;
     }
 
+    // ========================================================================
+    // UI CREATION - SHORTCUTS SECTION
+    // ========================================================================
+
+    /**
+     * Create the keyboard shortcuts section
+     * @returns Shortcuts section HTML element
+     */
     private createShortcutsSection(): HTMLElement {
         const section = document.createElement('div');
         section.className = 'mrw-section';
@@ -996,25 +542,8 @@ export class UIManager {
         const content = document.createElement('div');
         content.className = 'mrw-section-content collapsed';
 
-        const shortcuts = [
-            { keys: ['[', ']'], desc: 'Rotate ±5°' },
-            { keys: ['Shift', '[', ']'], desc: 'Rotate ±22.5°' },
-            { keys: ['S', 'Scroll'], desc: 'Scale model' },
-            { keys: ['H', 'Scroll'], desc: 'Adjust height' },
-            { keys: ['PgUp', 'PgDn'], desc: 'Height ±5mm' },
-            { keys: ['R'], desc: 'Reset scale' },
-            { keys: ['L'], desc: 'Lock scale' },
-            { keys: ['T'], desc: 'Toggle switch' },
-            { keys: ['Del'], desc: 'Delete selected' },
-            { keys: ['Esc'], desc: 'Cancel / Deselect' },
-            { keys: ['V'], desc: 'Toggle camera mode' },
-            { keys: ['Home'], desc: 'Reset camera' },
-            { keys: ['Shift', 'S'], desc: 'Toggle auto-snap' },
-            { keys: ['Shift', 'I'], desc: 'Toggle indicators' },
-            { keys: ['Shift', 'C'], desc: 'Clear all track' },
-        ];
-
-        shortcuts.forEach(shortcut => {
+        // Add each shortcut row
+        KEYBOARD_SHORTCUTS.forEach(shortcut => {
             const row = document.createElement('div');
             row.className = 'mrw-shortcut-row';
 
@@ -1037,6 +566,10 @@ export class UIManager {
         return section;
     }
 
+    /**
+     * Create the footer element
+     * @returns Footer HTML element
+     */
     private createFooter(): HTMLElement {
         const footer = document.createElement('div');
         footer.className = 'mrw-footer';
@@ -1057,6 +590,9 @@ export class UIManager {
     // SIDEBAR CONTROLS
     // ========================================================================
 
+    /**
+     * Toggle sidebar open/closed state
+     */
     toggleSidebar(): void {
         if (this.isOpen) {
             this.closeSidebar();
@@ -1065,6 +601,9 @@ export class UIManager {
         }
     }
 
+    /**
+     * Open the sidebar
+     */
     openSidebar(): void {
         this.isOpen = true;
         this.sidebar?.classList.remove('collapsed');
@@ -1072,6 +611,9 @@ export class UIManager {
         this.overlay?.classList.remove('visible');
     }
 
+    /**
+     * Close the sidebar
+     */
     closeSidebar(): void {
         this.isOpen = false;
         this.sidebar?.classList.add('collapsed');
@@ -1083,6 +625,10 @@ export class UIManager {
     // ACCORDION CONTROLS
     // ========================================================================
 
+    /**
+     * Toggle an accordion section
+     * @param id - Section ID to toggle
+     */
     private toggleAccordion(id: string): void {
         const section = this.accordionSections.get(id);
         if (!section) return;
@@ -1105,6 +651,9 @@ export class UIManager {
         section.isExpanded = !isExpanded;
     }
 
+    /**
+     * Expand all accordion sections
+     */
     expandAllSections(): void {
         this.accordionSections.forEach((_, id) => {
             const section = this.accordionSections.get(id);
@@ -1114,6 +663,9 @@ export class UIManager {
         });
     }
 
+    /**
+     * Collapse all accordion sections
+     */
     collapseAllSections(): void {
         this.accordionSections.forEach((_, id) => {
             const section = this.accordionSections.get(id);
@@ -1127,6 +679,10 @@ export class UIManager {
     // TRACK SELECTION
     // ========================================================================
 
+    /**
+     * Select a track piece
+     * @param catalogId - Catalog ID of the track piece to select
+     */
     private selectTrack(catalogId: string): void {
         // Deselect previous
         if (this.selectedCatalogId) {
@@ -1145,6 +701,9 @@ export class UIManager {
         }
     }
 
+    /**
+     * Deselect the current track piece
+     */
     deselectTrack(): void {
         if (this.selectedCatalogId) {
             const btn = this.trackButtons.get(this.selectedCatalogId);
@@ -1168,15 +727,27 @@ export class UIManager {
 
     /**
      * Alias for setToggleCallback (backward compatibility)
+     * @param id - Toggle identifier
+     * @param callback - Toggle callback function
      */
     registerToggleCallback(id: string, callback: ToggleCallback): void {
         this.setToggleCallback(id, callback);
     }
 
+    /**
+     * Get the current state of a toggle
+     * @param id - Toggle identifier
+     * @returns Current toggle state
+     */
     getToggleState(id: string): boolean {
         return this.toggleStates.get(id) ?? false;
     }
 
+    /**
+     * Set the state of a toggle
+     * @param id - Toggle identifier
+     * @param state - New toggle state
+     */
     setToggleState(id: string, state: boolean): void {
         const toggle = this.toggleButtons.get(id);
         if (toggle) {
@@ -1189,21 +760,20 @@ export class UIManager {
     // MODE INDICATOR
     // ========================================================================
 
+    /**
+     * Update the mode indicator in the footer
+     * @param mode - Current mode name
+     * @param hint - Help text for the current mode
+     */
     updateModeIndicator(mode: string, hint: string): void {
         const footer = document.getElementById('mrw-footer');
         if (!footer) return;
 
-        const icons: Record<string, string> = {
-            select: '🖱️',
-            place: '📍',
-            move: '✋',
-            rotate: '🔄',
-            delete: '🗑️'
-        };
+        const icon = MODE_ICONS[mode.toLowerCase()] || '▶️';
 
         footer.innerHTML = `
             <div class="mrw-mode-indicator">
-                <span class="icon">${icons[mode.toLowerCase()] || '▶️'}</span>
+                <span class="icon">${icon}</span>
                 <div>
                     <div class="mode-text">Mode: ${mode}</div>
                     <div class="mode-hint">${hint}</div>
@@ -1216,6 +786,9 @@ export class UIManager {
     // CLEANUP
     // ========================================================================
 
+    /**
+     * Dispose of the UIManager and clean up resources
+     */
     dispose(): void {
         this.sidebar?.remove();
         this.toggleButton?.remove();

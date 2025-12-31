@@ -14,119 +14,38 @@
  * 
  * @module ModelScaleHelper
  * @author Model Railway Workbench
- * @version 2.0.0 - Fixed rolling stock scale calculation
+ * @version 2.1.0 - Refactored to use centralized constants
  */
 
 import { AbstractMesh } from '@babylonjs/core/Meshes/abstractMesh';
 import { Vector3 } from '@babylonjs/core/Maths/math.vector';
 
 // ============================================================================
-// CONSTANTS - OO Gauge Reference Values
+// IMPORTS FROM CENTRALIZED CONSTANTS
+// ============================================================================
+
+import {
+    OO_GAUGE,
+    OO_ROLLING_STOCK_TARGETS,
+    REFERENCE_DIMENSIONS,
+    type RollingStockType,
+    type ReferenceDimensionKey
+} from '../../constants';
+
+// ============================================================================
+// RE-EXPORTS FOR BACKWARDS COMPATIBILITY
+// ============================================================================
+
+// Re-export constants so existing imports continue to work
+export { OO_GAUGE, OO_ROLLING_STOCK_TARGETS, REFERENCE_DIMENSIONS };
+export type { RollingStockType };
+
+// ============================================================================
+// LOCAL CONSTANTS
 // ============================================================================
 
 /** Logging prefix */
 const LOG_PREFIX = '[ModelScaleHelper]';
-
-/**
- * OO Gauge standard values
- * Scale ratio is 1:76.2 (4mm = 1 foot)
- */
-export const OO_GAUGE = {
-    /** Scale ratio - divide real-world by this to get model size */
-    SCALE_RATIO: 76.2,
-
-    /** Track gauge in meters (16.5mm) */
-    TRACK_GAUGE_M: 0.0165,
-
-    /** Track gauge in millimeters */
-    TRACK_GAUGE_MM: 16.5,
-
-    /** Convert real-world meters to OO scale meters */
-    realToScale: (realMeters: number): number => realMeters / 76.2,
-
-    /** Convert OO scale meters to real-world meters */
-    scaleToReal: (scaleMeters: number): number => scaleMeters * 76.2
-} as const;
-
-/**
- * Target dimensions for OO gauge rolling stock (in meters)
- * These are the DESIRED final dimensions after scaling
- */
-export const OO_ROLLING_STOCK_TARGETS = {
-    /** Diesel/electric locomotive - typically 200-280mm */
-    locomotive: {
-        lengthM: 0.230,     // 230mm - mid-range locomotive
-        heightM: 0.050,     // 50mm
-        widthM: 0.032,      // 32mm
-        description: 'Standard diesel/electric locomotive'
-    },
-
-    /** Steam locomotive - typically 180-240mm */
-    steam_locomotive: {
-        lengthM: 0.200,     // 200mm
-        heightM: 0.045,     // 45mm (to chimney top)
-        widthM: 0.028,      // 28mm
-        description: 'Steam locomotive'
-    },
-
-    /** Passenger coach - typically 260-305mm */
-    coach: {
-        lengthM: 0.275,     // 275mm - Mk3 coach
-        heightM: 0.045,     // 45mm
-        widthM: 0.030,      // 30mm
-        description: 'Passenger coach/carriage'
-    },
-
-    /** Freight wagon - typically 100-150mm */
-    wagon: {
-        lengthM: 0.120,     // 120mm
-        heightM: 0.040,     // 40mm
-        widthM: 0.028,      // 28mm
-        description: 'Freight wagon'
-    },
-
-    /** Container/intermodal - typically 60-90mm */
-    container: {
-        lengthM: 0.080,     // 80mm (20ft container scaled)
-        heightM: 0.034,     // 34mm
-        widthM: 0.032,      // 32mm
-        description: 'Shipping container'
-    }
-} as const;
-
-/** Rolling stock type key */
-export type RollingStockType = keyof typeof OO_ROLLING_STOCK_TARGETS;
-
-/**
- * Reference dimensions for real-world objects
- * Used to calculate scale when user provides real-world measurements
- */
-export const REFERENCE_DIMENSIONS = {
-    // Railway rolling stock (real-world lengths in meters)
-    'loco_diesel': { realM: 17.5, description: 'Diesel locomotive (~17.5m)' },
-    'loco_electric': { realM: 19.0, description: 'Electric locomotive (~19m)' },
-    'loco_steam': { realM: 15.0, description: 'Steam locomotive (~15m)' },
-    'coach_mk3': { realM: 23.0, description: 'BR Mk3 coach (23m)' },
-    'coach_standard': { realM: 21.0, description: 'Standard coach (~21m)' },
-    'wagon_standard': { realM: 9.0, description: 'Standard freight wagon (~9m)' },
-    'wagon_long': { realM: 12.0, description: 'Long freight wagon (~12m)' },
-
-    // Common scenery items
-    'figure_adult': { realM: 1.75, description: 'Adult figure (1.75m)' },
-    'figure_child': { realM: 1.2, description: 'Child figure (1.2m)' },
-    'car_small': { realM: 4.0, description: 'Small car (~4m)' },
-    'car_medium': { realM: 4.5, description: 'Medium car (~4.5m)' },
-    'van_small': { realM: 5.0, description: 'Small van (~5m)' },
-    'bus': { realM: 12.0, description: 'Single-deck bus (~12m)' },
-    'tree_small': { realM: 5.0, description: 'Small tree (~5m)' },
-    'tree_medium': { realM: 10.0, description: 'Medium tree (~10m)' },
-    'tree_large': { realM: 15.0, description: 'Large tree (~15m)' },
-    'building_house': { realM: 8.0, description: 'Typical house height (~8m)' },
-    'building_station': { realM: 6.0, description: 'Station platform building (~6m)' },
-    'signal_post': { realM: 4.0, description: 'Signal post (~4m)' },
-    'lamp_post': { realM: 5.0, description: 'Street lamp (~5m)' },
-    'fence_panel': { realM: 1.8, description: 'Fence panel height (1.8m)' }
-} as const;
 
 // ============================================================================
 // TYPE DEFINITIONS
@@ -178,6 +97,16 @@ export interface ScaleResult {
     confidence: 'high' | 'medium' | 'low';
 }
 
+/**
+ * Scaling mode for model import
+ */
+export type ScalingMode =
+    | 'rolling_stock'      // Use rolling stock targets
+    | 'real_world'         // 1:1 model scaled to OO
+    | 'reference'          // Use reference dimension
+    | 'direct'             // Direct scale factor
+    | 'auto';              // Auto-detect
+
 // ============================================================================
 // MODEL SCALE HELPER CLASS
 // ============================================================================
@@ -218,7 +147,9 @@ export class ModelScaleHelper {
                 depth: 0,
                 maxDimension: 0,
                 minDimension: 0,
-                center: Vector3.Zero()
+                center: Vector3.Zero(),
+                boundsMin: Vector3.Zero(),
+                boundsMax: Vector3.Zero()
             };
         }
 
@@ -355,6 +286,11 @@ export class ModelScaleHelper {
                     heightM: dimensions.height,
                     depthM: dimensions.depth
                 },
+                realWorldDimensions: {
+                    widthM: dimensions.width * OO_GAUGE.SCALE_RATIO,
+                    heightM: dimensions.height * OO_GAUGE.SCALE_RATIO,
+                    depthM: dimensions.depth * OO_GAUGE.SCALE_RATIO
+                },
                 description: 'No scaling (invalid dimensions)',
                 confidence: 'low'
             };
@@ -451,10 +387,10 @@ export class ModelScaleHelper {
      */
     static calculateFromReference(
         dimensions: ModelDimensions,
-        referenceKey: keyof typeof REFERENCE_DIMENSIONS | string,
+        referenceKey: ReferenceDimensionKey | string,
         useMaxDimension: boolean | string = true
     ): ScaleResult {
-        const reference = REFERENCE_DIMENSIONS[referenceKey as keyof typeof REFERENCE_DIMENSIONS];
+        const reference = REFERENCE_DIMENSIONS[referenceKey as ReferenceDimensionKey];
         if (!reference) {
             console.warn(`${LOG_PREFIX} Unknown reference: ${referenceKey}`);
             return {
@@ -583,7 +519,7 @@ export class ModelScaleHelper {
         }
 
         // ----------------------------------------------------------------
-        // Case 2: Scenery/buildings - use track gauge reference
+        // Case 2: Scenery/buildings - use heuristics
         // ----------------------------------------------------------------
 
         // Check if already at OO scale (reasonable for scenery)
@@ -602,43 +538,43 @@ export class ModelScaleHelper {
                     heightM: dimensions.height * OO_GAUGE.SCALE_RATIO,
                     depthM: dimensions.depth * OO_GAUGE.SCALE_RATIO
                 },
-                description: 'Already OO scale (no adjustment)',
+                description: 'Already OO scale (scenery/building)',
                 confidence: 'medium'
             };
         }
 
-        // Very large model - likely real-world 1:1 scale
-        if (maxDim > 2) {
-            console.log(`${LOG_PREFIX}   Large model - assuming real-world 1:1 scale`);
+        // Very large model - assume real-world scale
+        if (maxDim > 1.0) {
+            console.log(`${LOG_PREFIX}   Large model - assuming real-world scale`);
             return this.calculateFromRealWorldScale(dimensions);
         }
 
-        // Very small model - might need scaling up
+        // Very small model - might need scaling up (unusual)
         if (maxDim < 0.01) {
-            // Assume it's meant to be about 10cm in OO scale
-            const targetM = 0.1;
-            const scaleFactor = targetM / maxDim;
-
-            const resultDimensions = {
-                widthM: dimensions.width * scaleFactor,
-                heightM: dimensions.height * scaleFactor,
-                depthM: dimensions.depth * scaleFactor
-            };
+            console.log(`${LOG_PREFIX}   Very small model - may need scaling up`);
+            // Scale to reasonable OO size (e.g., a small accessory at 50mm)
+            const targetSize = 0.05;
+            const scaleFactor = targetSize / maxDim;
 
             return {
                 scaleFactor,
-                resultDimensions,
-                realWorldDimensions: {
-                    widthM: resultDimensions.widthM * OO_GAUGE.SCALE_RATIO,
-                    heightM: resultDimensions.heightM * OO_GAUGE.SCALE_RATIO,
-                    depthM: resultDimensions.depthM * OO_GAUGE.SCALE_RATIO
+                resultDimensions: {
+                    widthM: dimensions.width * scaleFactor,
+                    heightM: dimensions.height * scaleFactor,
+                    depthM: dimensions.depth * scaleFactor
                 },
-                description: 'Scaled up from very small model',
+                realWorldDimensions: {
+                    widthM: dimensions.width * scaleFactor * OO_GAUGE.SCALE_RATIO,
+                    heightM: dimensions.height * scaleFactor * OO_GAUGE.SCALE_RATIO,
+                    depthM: dimensions.depth * scaleFactor * OO_GAUGE.SCALE_RATIO
+                },
+                description: 'Scaled up from very small',
                 confidence: 'low'
             };
         }
 
-        // Default - no scaling
+        // Default: no scaling
+        console.log(`${LOG_PREFIX}   Using default scale (1.0)`);
         return {
             scaleFactor: 1,
             resultDimensions: {
@@ -657,12 +593,11 @@ export class ModelScaleHelper {
     }
 
     // ========================================================================
-    // REAL-WORLD DIMENSION METHODS (Used by ModelImportDialog)
+    // REAL-WORLD DIMENSION BASED SCALING
     // ========================================================================
 
     /**
      * Calculate scale based on known real-world height
-     * User specifies what the HEIGHT of the object should be in real life
      * 
      * @param dimensions - Model dimensions
      * @param realWorldHeightM - Real-world height in meters

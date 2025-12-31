@@ -5,12 +5,31 @@
  *
  * Path: frontend/src/systems/camera/CameraSystem.ts
  *
- * Blender-like orbit controls + WASD/QE translation.
+ * Professional camera controls for the Model Railway Workbench application.
+ * Provides intuitive 3D navigation for designing model railway layouts.
  *
- * Key change:
- * - Translation moves BOTH camera.position and camera.target together.
- * - Forward/right vectors are derived from the camera’s real forward direction
- *   projected onto XZ (not just alpha), so W is always “screen forward”.
+ * CONTROL SCHEME:
+ * ---------------
+ * - WASD        : Pan camera position (move around the scene)
+ * - Q/E         : Move camera up/down (vertical movement)
+ * - Scroll      : Zoom in/out
+ * - Left Click  : Hold and drag for freelook (rotate camera view)
+ * - Shift       : Hold for faster movement (3x speed)
+ *
+ * ARCHITECTURE:
+ * -------------
+ * Uses Babylon.js ArcRotateCamera for orbit mode with custom input handling
+ * to provide smooth, responsive controls. The camera orbits around a target
+ * point, with WASD moving both the camera position and target together.
+ *
+ * INTEGRATION:
+ * ------------
+ * Supports movement blocking via callback for external systems (e.g., train
+ * controls) that need to capture WASD keys when active.
+ *
+ * @module CameraSystem
+ * @author Model Railway Workbench
+ * @version 3.0.0
  */
 
 import { Scene } from '@babylonjs/core/scene';
@@ -24,364 +43,321 @@ import type { Project } from '../../core/Project';
 // TYPE DEFINITIONS
 // =============================================================================
 
+/**
+ * Camera operating mode
+ * - 'orbit': Standard 3D view for building and editing layouts
+ * - 'walk': First-person view for experiencing the layout at eye level
+ */
 export type CameraMode = 'orbit' | 'walk';
 
+/**
+ * Camera configuration constants
+ * All distances are in meters (scene units)
+ */
 const CAMERA_CONFIG = {
+    // -------------------------------------------------------------------------
+    // Clipping Planes
+    // -------------------------------------------------------------------------
+
+    /** Near clipping plane in meters (1mm - allows very close inspection) */
     NEAR_CLIP_M: 0.001,
+
+    /** Far clipping plane in meters (100m - covers entire scene) */
     FAR_CLIP_M: 100.0,
 
+    // -------------------------------------------------------------------------
+    // Zoom Limits
+    // -------------------------------------------------------------------------
+
+    /** Minimum zoom distance in meters (20mm - close-up detail work) */
     MIN_ZOOM_M: 0.02,
+
+    /** Maximum zoom distance in meters (8m - full layout overview) */
     MAX_ZOOM_M: 8.0,
 
+    // -------------------------------------------------------------------------
+    // Mouse Controls
+    // -------------------------------------------------------------------------
+
+    /** 
+     * Scroll wheel sensitivity for zoom
+     * Higher values = slower zoom (more precise control)
+     */
     WHEEL_PRECISION: 50,
+
+    /** 
+     * Middle-mouse panning sensitivity
+     * Higher values = slower panning
+     */
     PAN_SENSIBILITY: 500,
+
+    /** 
+     * Camera inertia (momentum after input stops)
+     * 0 = no inertia, 1 = maximum inertia
+     */
     INERTIA: 0.5,
+
+    /** Touch pinch-to-zoom sensitivity */
     PINCH_PRECISION: 50,
 
-    // Movement (WASD/QE)
-    STRAFE_SPEED: 0.02,
-    VERTICAL_SPEED: 0.015,
-    FAST_SPEED_MULTIPLIER: 3.0,
+    /** 
+     * Rotation sensitivity for freelook
+     * Higher values = slower rotation (more precise)
+     */
+    ANGULAR_SENSIBILITY: 1000,
 
+    // -------------------------------------------------------------------------
+    // WASD Movement
+    // -------------------------------------------------------------------------
+
+    /** Base horizontal movement speed in meters per frame */
+    MOVE_SPEED: 0.025,
+
+    /** Base vertical movement speed in meters per frame */
+    VERTICAL_SPEED: 0.02,
+
+    /** Speed multiplier when holding Shift */
+    FAST_MULTIPLIER: 3.0,
+
+    // -------------------------------------------------------------------------
+    // Movement Bounds
+    // -------------------------------------------------------------------------
+
+    /** Minimum camera target height (table surface level) */
     MIN_TARGET_HEIGHT: 0.0,
-    MAX_TARGET_HEIGHT: 5.0,
-    MAX_HORIZONTAL_DISTANCE: 5.0,
 
-    DEBUG_MOVEMENT: true
+    /** Maximum camera target height */
+    MAX_TARGET_HEIGHT: 5.0,
+
+    /** Maximum horizontal distance from scene origin */
+    MAX_HORIZONTAL_DISTANCE: 10.0,
+
+    // -------------------------------------------------------------------------
+    // Beta (Vertical Angle) Limits
+    // -------------------------------------------------------------------------
+
+    /** Minimum beta angle (prevent looking from below) */
+    LOWER_BETA_LIMIT: 0.1,
+
+    /** Maximum beta angle (prevent flipping over the top) */
+    UPPER_BETA_LIMIT: Math.PI / 2 - 0.05,
+
+    // -------------------------------------------------------------------------
+    // Walk Camera
+    // -------------------------------------------------------------------------
+
+    /** Default eye height in walk mode (meters) */
+    DEFAULT_EYE_HEIGHT: 0.16,
+
+    /** Walk camera movement speed */
+    WALK_SPEED: 0.1,
+
+    // -------------------------------------------------------------------------
+    // Debug
+    // -------------------------------------------------------------------------
+
+    /** Enable verbose logging for debugging */
+    DEBUG_ENABLED: false
+
 } as const;
+
+// =============================================================================
+// DEBUG WINDOW INTERFACE
+// =============================================================================
+
+/**
+ * Window extension for camera debug utilities
+ */
+declare global {
+    interface Window {
+        cameraDebug?: {
+            getState: () => object;
+            resetCamera: () => void;
+            setDebug: (enabled: boolean) => void;
+            logConfig: () => void;
+            forceEnable: () => void;
+            disable: () => void;
+            enable: () => void;
+        };
+    }
+}
 
 // =============================================================================
 // CAMERA SYSTEM CLASS
 // =============================================================================
 
+/**
+ * CameraSystem
+ *
+ * Manages camera creation, input handling, and mode switching for the
+ * Model Railway Workbench. Provides smooth, intuitive controls for
+ * navigating 3D model railway layouts.
+ *
+ * @example
+ * ```typescript
+ * const cameraSystem = new CameraSystem(scene, project, canvas);
+ * cameraSystem.initialize();
+ *
+ * // Block movement when train is selected
+ * cameraSystem.setShouldBlockMovement(() => trainSystem.hasSelectedTrain());
+ * ```
+ */
 export class CameraSystem {
+
+    // =========================================================================
+    // PRIVATE PROPERTIES
+    // =========================================================================
+
+    // -------------------------------------------------------------------------
+    // Core References
+    // -------------------------------------------------------------------------
+
+    /** Babylon.js scene reference */
     private readonly scene: Scene;
+
+    /** Project configuration reference */
     private readonly project: Project;
+
+    /** Canvas element for input attachment */
     private readonly canvas: HTMLCanvasElement;
 
+    // -------------------------------------------------------------------------
+    // Camera Instances
+    // -------------------------------------------------------------------------
+
+    /** Orbit camera for standard 3D viewing */
     private orbitCamera: ArcRotateCamera | null = null;
+
+    /** Walk camera for first-person viewing */
     private walkCamera: UniversalCamera | null = null;
 
+    /** Current camera mode */
     private currentMode: CameraMode = 'orbit';
 
+    // -------------------------------------------------------------------------
+    // Input State
+    // -------------------------------------------------------------------------
+
+    /** Set of currently pressed key codes */
     private pressedKeys: Set<string> = new Set();
+
+    /** Whether left mouse button is held (for freelook) */
+    private isLeftMouseDown: boolean = false;
+
+    /** Animation frame ID for movement loop */
     private movementAnimationId: number | null = null;
 
+    // -------------------------------------------------------------------------
+    // Event Handlers
+    // -------------------------------------------------------------------------
+
+    /** Bound event handler references for cleanup */
     private boundHandlers: {
         keyDown: (e: KeyboardEvent) => void;
         keyUp: (e: KeyboardEvent) => void;
-        blur: () => void;
+        windowBlur: () => void;
+        windowFocus: () => void;
+        mouseDown: (e: MouseEvent) => void;
+        mouseUp: (e: MouseEvent) => void;
+        visibilityChange: () => void;
     } | null = null;
 
+    // -------------------------------------------------------------------------
+    // External Integration
+    // -------------------------------------------------------------------------
+
+    /** 
+     * Callback to check if camera movement should be blocked
+     * Returns true when external system (e.g., train controls) needs WASD keys
+     */
+    private shouldBlockMovementCallback: (() => boolean) | null = null;
+
+    /** Whether controls are currently disabled by external system */
+    private controlsDisabled: boolean = false;
+
+    /** Count of disable requests (for nested disable/enable calls) */
+    private disableCount: number = 0;
+
+    // -------------------------------------------------------------------------
+    // Debug State
+    // -------------------------------------------------------------------------
+
+    /** Debug logging enabled flag */
+    private debugEnabled: boolean = CAMERA_CONFIG.DEBUG_ENABLED;
+
+    // =========================================================================
+    // CONSTRUCTOR
+    // =========================================================================
+
+    /**
+     * Create a new CameraSystem instance
+     *
+     * @param scene - Babylon.js scene to add cameras to
+     * @param project - Project configuration for board dimensions
+     * @param canvas - HTML canvas for input attachment
+     */
     constructor(scene: Scene, project: Project, canvas: HTMLCanvasElement) {
         this.scene = scene;
         this.project = project;
         this.canvas = canvas;
 
-        console.log('[CameraSystem] Instance created');
-        console.log(`  Near clip: ${CAMERA_CONFIG.NEAR_CLIP_M}m (${CAMERA_CONFIG.NEAR_CLIP_M * 1000}mm)`);
-        console.log(`  Min zoom: ${CAMERA_CONFIG.MIN_ZOOM_M}m (${CAMERA_CONFIG.MIN_ZOOM_M * 1000}mm)`);
+        this.log('[CameraSystem] Instance created');
+        this.log(`  Near clip: ${CAMERA_CONFIG.NEAR_CLIP_M}m (${CAMERA_CONFIG.NEAR_CLIP_M * 1000}mm)`);
+        this.log(`  Min zoom: ${CAMERA_CONFIG.MIN_ZOOM_M}m (${CAMERA_CONFIG.MIN_ZOOM_M * 1000}mm)`);
     }
 
+    // =========================================================================
+    // PUBLIC API - INITIALIZATION
+    // =========================================================================
+
+    /**
+     * Initialize the camera system
+     *
+     * Creates orbit and walk cameras, sets up input handlers, and
+     * registers debug utilities on the window object.
+     *
+     * @throws Error if initialization fails
+     */
     initialize(): void {
-        console.log('[CameraSystem] Initializing cameras...');
+        console.log('[CameraSystem] Initializing...');
 
         try {
+            // Create camera instances
             this.createOrbitCamera();
             this.createWalkCamera();
-            this.setupMovementControls();
 
+            // Setup input handling
+            this.setupInputHandlers();
+
+            // Set initial mode
             const cameraConfig = this.project.getCameraConfig();
             const initialMode = cameraConfig?.defaultMode || 'orbit';
             this.setMode(initialMode);
 
+            // Register debug utilities
+            this.registerDebugUtilities();
+
+            // Log controls guide
+            this.logControlsGuide();
+
             console.log('✓ Camera system initialized');
-            console.log('  Keyboard Movement (Orbit):');
-            console.log('    W/S = Move forward/backward (camera forward projected onto XZ)');
-            console.log('    A/D = Strafe left/right');
-            console.log('    Q/E = Move down/up (world Y)');
-            console.log('    Shift = Faster movement (3x)');
+
         } catch (error) {
             const message = error instanceof Error ? error.message : String(error);
-            console.error('[CameraSystem] Failed to initialize cameras:', message);
+            console.error('[CameraSystem] Initialization failed:', message);
             throw new Error(`Camera initialization failed: ${message}`);
         }
     }
 
     // =========================================================================
-    // MOVEMENT CONTROLS
+    // PUBLIC API - MODE SWITCHING
     // =========================================================================
-
-    private setupMovementControls(): void {
-        console.log('  Setting up movement controls...');
-
-        this.boundHandlers = {
-            keyDown: this.handleKeyDown.bind(this),
-            keyUp: this.handleKeyUp.bind(this),
-            blur: this.handleWindowBlur.bind(this)
-        };
-
-        document.addEventListener('keydown', this.boundHandlers.keyDown);
-        document.addEventListener('keyup', this.boundHandlers.keyUp);
-        window.addEventListener('blur', this.boundHandlers.blur);
-
-        console.log('  ✓ Movement controls configured (WASD/QE)');
-    }
-
-    private hasMovementKeyPressed(): boolean {
-        return this.pressedKeys.has('KeyW') ||
-            this.pressedKeys.has('KeyS') ||
-            this.pressedKeys.has('KeyA') ||
-            this.pressedKeys.has('KeyD') ||
-            this.pressedKeys.has('KeyQ') ||
-            this.pressedKeys.has('KeyE');
-    }
-
-    private handleKeyDown(event: KeyboardEvent): void {
-        const code = event.code;
-
-        const isMovementKey = code === 'KeyW' || code === 'KeyS' ||
-            code === 'KeyA' || code === 'KeyD' ||
-            code === 'KeyQ' || code === 'KeyE';
-        const isShiftKey = code === 'ShiftLeft' || code === 'ShiftRight';
-
-        if (!isMovementKey && !isShiftKey) {
-            return;
-        }
-
-        if (event.repeat) {
-            return;
-        }
-
-        this.pressedKeys.add(code);
-
-        if (CAMERA_CONFIG.DEBUG_MOVEMENT && isMovementKey) {
-            console.log(`[CameraSystem] Key DOWN: ${code}`);
-            console.log('  Pressed keys:', Array.from(this.pressedKeys));
-        }
-
-        if (isMovementKey) {
-            this.startMovementLoop();
-        }
-    }
-
-    private handleKeyUp(event: KeyboardEvent): void {
-        const code = event.code;
-        this.pressedKeys.delete(code);
-
-        if (CAMERA_CONFIG.DEBUG_MOVEMENT) {
-            const isMovementKey = code === 'KeyW' || code === 'KeyS' ||
-                code === 'KeyA' || code === 'KeyD' ||
-                code === 'KeyQ' || code === 'KeyE';
-            if (isMovementKey) {
-                console.log(`[CameraSystem] Key UP: ${code}`);
-            }
-        }
-    }
-
-    private handleWindowBlur(): void {
-        if (CAMERA_CONFIG.DEBUG_MOVEMENT) {
-            console.log('[CameraSystem] Window blur - resetting input state');
-        }
-
-        this.pressedKeys.clear();
-        this.stopMovementLoop();
-    }
-
-    private startMovementLoop(): void {
-        if (this.movementAnimationId !== null) {
-            return;
-        }
-
-        if (CAMERA_CONFIG.DEBUG_MOVEMENT) {
-            console.log('[CameraSystem] Movement loop STARTED');
-        }
-
-        const movementLoop = (): void => {
-            const shouldContinue = this.hasMovementKeyPressed() && this.currentMode === 'orbit';
-
-            if (shouldContinue) {
-                this.processMovement();
-                this.movementAnimationId = requestAnimationFrame(movementLoop);
-            } else {
-                if (CAMERA_CONFIG.DEBUG_MOVEMENT) {
-                    console.log('[CameraSystem] Movement loop STOPPED');
-                }
-                this.movementAnimationId = null;
-            }
-        };
-
-        this.movementAnimationId = requestAnimationFrame(movementLoop);
-    }
-
-    private stopMovementLoop(): void {
-        if (this.movementAnimationId !== null) {
-            cancelAnimationFrame(this.movementAnimationId);
-            this.movementAnimationId = null;
-        }
-    }
 
     /**
-     * Blender-like translation:
-     * - Compute camera forward direction, project to XZ plane
-     * - Build right vector from cross product
-     * - Move BOTH camera.position and camera.target by the same delta
+     * Set the camera mode
+     *
+     * @param mode - 'orbit' for 3D building view, 'walk' for first-person
      */
-    private processMovement(): void {
-        if (!this.orbitCamera) {
-            return;
-        }
-
-        const fast = this.pressedKeys.has('ShiftLeft') || this.pressedKeys.has('ShiftRight');
-        const speedMul = fast ? CAMERA_CONFIG.FAST_SPEED_MULTIPLIER : 1.0;
-
-        const strafeSpeed = CAMERA_CONFIG.STRAFE_SPEED * speedMul;
-        const verticalSpeed = CAMERA_CONFIG.VERTICAL_SPEED * speedMul;
-
-        // Get the real forward direction and flatten it onto XZ
-        const f3 = this.orbitCamera.getForwardRay().direction;
-        const forward = new Vector3(f3.x, 0, f3.z);
-
-        // If camera is looking almost straight up/down, forward length can be ~0
-        if (forward.lengthSquared() < 1e-8) {
-            return;
-        }
-
-        forward.normalize();
-
-        // Right vector (camera-right on the ground plane)
-        const right = Vector3.Cross(Vector3.Up(), forward).normalize();
-
-        let delta = Vector3.Zero();
-
-        if (this.pressedKeys.has('KeyW')) {
-            delta = delta.add(forward.scale(strafeSpeed));
-        }
-        if (this.pressedKeys.has('KeyS')) {
-            delta = delta.add(forward.scale(-strafeSpeed));
-        }
-        if (this.pressedKeys.has('KeyD')) delta = delta.add(right.scale(strafeSpeed));
-        if (this.pressedKeys.has('KeyA')) delta = delta.add(right.scale(-strafeSpeed));
-        if (this.pressedKeys.has('KeyE')) {
-            delta = delta.add(new Vector3(0, verticalSpeed, 0));
-        }
-        if (this.pressedKeys.has('KeyQ')) {
-            delta = delta.add(new Vector3(0, -verticalSpeed, 0));
-        }
-
-        if (delta.lengthSquared() < 1e-12) {
-            return;
-        }
-
-        // Apply translation to BOTH position and target
-        this.orbitCamera.position.addInPlace(delta);
-        this.orbitCamera.target.addInPlace(delta);
-
-        // Clamp target height (optional but keeps things sane)
-        const t = this.orbitCamera.target;
-        t.y = Math.min(Math.max(t.y, CAMERA_CONFIG.MIN_TARGET_HEIGHT), CAMERA_CONFIG.MAX_TARGET_HEIGHT);
-
-        // Optional: clamp horizontal drift
-        const flat = new Vector3(t.x, 0, t.z);
-        const maxD = CAMERA_CONFIG.MAX_HORIZONTAL_DISTANCE;
-        if (flat.length() > maxD) {
-            flat.normalize().scaleInPlace(maxD);
-            this.orbitCamera.target.x = flat.x;
-            this.orbitCamera.target.z = flat.z;
-        }
-
-        if (CAMERA_CONFIG.DEBUG_MOVEMENT) {
-            console.log('[CameraSystem] Move delta:', delta);
-            console.log('[CameraSystem] New target:', this.orbitCamera.target);
-        }
-    }
-
-    // =========================================================================
-    // ORBIT CAMERA
-    // =========================================================================
-
-    private createOrbitCamera(): void {
-        console.log('  Creating orbit camera...');
-
-        const dims = this.project.getBoardDimensions();
-        const cameraConfig = this.project.getCameraConfig();
-
-        const targetY = dims.heightFromFloor;
-        const target = new Vector3(0, targetY, 0);
-
-        this.orbitCamera = new ArcRotateCamera(
-            'orbitCamera',
-            Math.PI / 4,
-            Math.PI / 3,
-            2.0,
-            target,
-            this.scene
-        );
-
-        this.orbitCamera.minZ = CAMERA_CONFIG.NEAR_CLIP_M;
-        this.orbitCamera.maxZ = CAMERA_CONFIG.FAR_CLIP_M;
-
-        const configMinRadius = cameraConfig?.orbit?.minRadiusM;
-        const configMaxRadius = cameraConfig?.orbit?.maxRadiusM;
-
-        this.orbitCamera.lowerRadiusLimit = configMinRadius ?? CAMERA_CONFIG.MIN_ZOOM_M;
-        this.orbitCamera.upperRadiusLimit = configMaxRadius ?? CAMERA_CONFIG.MAX_ZOOM_M;
-
-        this.orbitCamera.lowerBetaLimit = 0.1;
-        this.orbitCamera.upperBetaLimit = Math.PI / 2 - 0.05;
-
-        this.orbitCamera.wheelPrecision = CAMERA_CONFIG.WHEEL_PRECISION;
-        this.orbitCamera.panningSensibility = CAMERA_CONFIG.PAN_SENSIBILITY;
-        this.orbitCamera.pinchPrecision = CAMERA_CONFIG.PINCH_PRECISION;
-
-        this.orbitCamera.inertia = CAMERA_CONFIG.INERTIA;
-        this.orbitCamera.panningInertia = CAMERA_CONFIG.INERTIA;
-
-        this.orbitCamera.zoomToMouseLocation = true;
-        this.orbitCamera.useNaturalPinchZoom = true;
-
-        this.orbitCamera.attachControl(this.canvas, false);
-
-        console.log('  ✓ Orbit camera created');
-    }
-
-    // =========================================================================
-    // WALK CAMERA
-    // =========================================================================
-
-    private createWalkCamera(): void {
-        console.log('  Creating walk camera...');
-
-        const dims = this.project.getBoardDimensions();
-        const cameraConfig = this.project.getCameraConfig();
-
-        const eyeHeight = cameraConfig?.walk?.eyeHeightM ?? 0.16;
-        const startPosition = new Vector3(0, eyeHeight, -1.0);
-
-        this.walkCamera = new UniversalCamera('walkCamera', startPosition, this.scene);
-
-        this.walkCamera.minZ = CAMERA_CONFIG.NEAR_CLIP_M;
-        this.walkCamera.maxZ = CAMERA_CONFIG.FAR_CLIP_M;
-
-        this.walkCamera.setTarget(new Vector3(0, dims.heightFromFloor, 0));
-
-        this.walkCamera.speed = 0.1;
-        this.walkCamera.angularSensibility = 2000;
-
-        this.walkCamera.keysUp = [87];
-        this.walkCamera.keysDown = [83];
-        this.walkCamera.keysLeft = [65];
-        this.walkCamera.keysRight = [68];
-
-        this.walkCamera.attachControl(this.canvas, true);
-
-        console.log('  ✓ Walk camera created');
-    }
-
-    // =========================================================================
-    // MODE SWITCHING
-    // =========================================================================
-
     setMode(mode: CameraMode): void {
         if (!this.orbitCamera || !this.walkCamera) {
             throw new Error('Cameras not initialized - call initialize() first');
@@ -389,32 +365,54 @@ export class CameraSystem {
 
         this.currentMode = mode;
 
+        // Clear input state when switching modes
         this.pressedKeys.clear();
+        this.isLeftMouseDown = false;
         this.stopMovementLoop();
 
         if (mode === 'orbit') {
+            this.walkCamera.detachControl();
+            this.orbitCamera.attachControl(this.canvas, false);
             this.scene.activeCamera = this.orbitCamera;
-            console.log('→ Camera mode: ORBIT (build mode)');
+            console.log('→ Camera mode: ORBIT (building view)');
         } else {
+            this.orbitCamera.detachControl();
+            this.walkCamera.attachControl(this.canvas, true);
             this.scene.activeCamera = this.walkCamera;
-            console.log('→ Camera mode: WALK (view mode)');
+            console.log('→ Camera mode: WALK (first-person view)');
         }
     }
 
+    /**
+     * Toggle between orbit and walk camera modes
+     *
+     * @returns The new camera mode
+     */
     toggleMode(): CameraMode {
         const newMode = this.currentMode === 'orbit' ? 'walk' : 'orbit';
         this.setMode(newMode);
         return newMode;
     }
 
+    /**
+     * Get the current camera mode
+     *
+     * @returns Current mode ('orbit' or 'walk')
+     */
     getCurrentMode(): CameraMode {
         return this.currentMode;
     }
 
     // =========================================================================
-    // CAMERA ACCESS
+    // PUBLIC API - CAMERA ACCESS
     // =========================================================================
 
+    /**
+     * Get the currently active camera
+     *
+     * @returns The active Babylon.js camera
+     * @throws Error if no camera is active
+     */
     getActiveCamera(): Camera {
         if (!this.scene.activeCamera) {
             throw new Error('No active camera - ensure initialize() was called');
@@ -422,18 +420,33 @@ export class CameraSystem {
         return this.scene.activeCamera;
     }
 
+    /**
+     * Get the orbit camera instance
+     *
+     * @returns ArcRotateCamera or null if not initialized
+     */
     getOrbitCamera(): ArcRotateCamera | null {
         return this.orbitCamera;
     }
 
+    /**
+     * Get the walk camera instance
+     *
+     * @returns UniversalCamera or null if not initialized
+     */
     getWalkCamera(): UniversalCamera | null {
         return this.walkCamera;
     }
 
     // =========================================================================
-    // CAMERA CONTROLS
+    // PUBLIC API - CAMERA MANIPULATION
     // =========================================================================
 
+    /**
+     * Reset orbit camera to default position
+     *
+     * Centers on the baseboard with a good overview angle
+     */
     resetOrbitCamera(): void {
         if (!this.orbitCamera) {
             console.warn('[CameraSystem] Cannot reset - orbit camera not initialized');
@@ -443,26 +456,35 @@ export class CameraSystem {
         const dims = this.project.getBoardDimensions();
         const targetY = dims.heightFromFloor;
 
-        this.orbitCamera.alpha = Math.PI / 4;
-        this.orbitCamera.beta = Math.PI / 3;
-        this.orbitCamera.radius = 2.0;
+        // Reset to default viewing angles
+        this.orbitCamera.alpha = Math.PI / 4;      // 45° horizontal
+        this.orbitCamera.beta = Math.PI / 3;       // 60° vertical
+        this.orbitCamera.radius = 2.0;             // 2m distance
 
-        // IMPORTANT: keep the existing Vector3 and mutate it (safer)
+        // Center on baseboard
         this.orbitCamera.target.copyFromFloats(0, targetY, 0);
 
         console.log('[CameraSystem] Orbit camera reset to default view');
     }
 
+    /**
+     * Focus camera on a specific position
+     *
+     * @param position - World position to focus on
+     * @param distance - Distance from target (meters), clamped to zoom limits
+     */
     focusOn(position: Vector3, distance: number = 0.3): void {
         if (!this.orbitCamera) {
             console.warn('[CameraSystem] Cannot focus - orbit camera not initialized');
             return;
         }
 
+        // Ensure we're in orbit mode
         if (this.currentMode !== 'orbit') {
             this.setMode('orbit');
         }
 
+        // Clamp distance to zoom limits
         const clampedDistance = Math.max(
             CAMERA_CONFIG.MIN_ZOOM_M,
             Math.min(distance, CAMERA_CONFIG.MAX_ZOOM_M)
@@ -471,11 +493,14 @@ export class CameraSystem {
         this.orbitCamera.target.copyFrom(position);
         this.orbitCamera.radius = clampedDistance;
 
-        console.log(
-            `[CameraSystem] Focused on (${position.x.toFixed(3)}, ${position.y.toFixed(3)}, ${position.z.toFixed(3)}) at ${clampedDistance}m`
-        );
+        this.log(`[CameraSystem] Focused on (${position.x.toFixed(3)}, ${position.y.toFixed(3)}, ${position.z.toFixed(3)}) at ${clampedDistance}m`);
     }
 
+    /**
+     * Set zoom distance directly
+     *
+     * @param distance - Distance from target in meters
+     */
     setZoomDistance(distance: number): void {
         if (!this.orbitCamera) {
             console.warn('[CameraSystem] Cannot zoom - orbit camera not initialized');
@@ -490,28 +515,751 @@ export class CameraSystem {
         this.orbitCamera.radius = clampedDistance;
     }
 
+    /**
+     * Get current zoom distance
+     *
+     * @returns Distance from camera to target in meters
+     */
     getZoomDistance(): number {
-        return this.orbitCamera?.radius ?? 0;
+        return this.orbitCamera?.radius ?? CAMERA_CONFIG.MAX_ZOOM_M;
+    }
+
+    // =========================================================================
+    // PUBLIC API - EXTERNAL INTEGRATION
+    // =========================================================================
+
+    /**
+     * Set callback to check if movement should be blocked
+     *
+     * When the callback returns true, WASD keys are not processed
+     * by the camera system, allowing external systems (like train
+     * controls) to use them instead.
+     *
+     * @param callback - Function returning true to block movement
+     *
+     * @example
+     * ```typescript
+     * cameraSystem.setShouldBlockMovement(() => {
+     *     return trainSystem.hasSelectedTrain();
+     * });
+     * ```
+     */
+    setShouldBlockMovement(callback: (() => boolean) | null): void {
+        this.shouldBlockMovementCallback = callback;
+        this.log('[CameraSystem] Movement blocking callback ' + (callback ? 'SET' : 'CLEARED'));
+    }
+
+    /**
+     * Check if movement is currently blocked
+     *
+     * @returns true if an external system has blocked camera movement
+     */
+    isMovementBlocked(): boolean {
+        return this.shouldBlockMovementCallback?.() ?? false;
+    }
+
+    /**
+     * Temporarily disable camera controls
+     *
+     * Useful when other systems need exclusive input (e.g., drag operations).
+     * Uses reference counting so nested disable/enable calls work correctly.
+     */
+    disableControls(): void {
+        this.disableCount++;
+
+        if (this.disableCount === 1) {
+            // First disable - actually detach controls
+            this.pressedKeys.clear();
+            this.isLeftMouseDown = false;
+            this.stopMovementLoop();
+            this.orbitCamera?.detachControl();
+            this.controlsDisabled = true;
+            console.log('[CameraSystem] Controls disabled (count: 1)');
+        } else {
+            this.log(`[CameraSystem] Controls disable requested (count: ${this.disableCount})`);
+        }
+    }
+
+    /**
+     * Re-enable camera controls after being disabled
+     *
+     * Must be called the same number of times as disableControls() was called.
+     */
+    enableControls(): void {
+        if (this.disableCount > 0) {
+            this.disableCount--;
+        }
+
+        if (this.disableCount === 0 && this.controlsDisabled) {
+            // All disables have been matched with enables - reattach
+            if (this.currentMode === 'orbit' && this.orbitCamera) {
+                this.orbitCamera.attachControl(this.canvas, false);
+            } else if (this.currentMode === 'walk' && this.walkCamera) {
+                this.walkCamera.attachControl(this.canvas, true);
+            }
+            this.controlsDisabled = false;
+            console.log('[CameraSystem] Controls enabled (count: 0)');
+        } else {
+            this.log(`[CameraSystem] Controls enable requested (count: ${this.disableCount})`);
+        }
+    }
+
+    /**
+     * Force-enable camera controls
+     *
+     * Emergency method to restore camera controls regardless of disable count.
+     * Use when camera appears stuck.
+     */
+    forceEnableControls(): void {
+        this.disableCount = 0;
+        this.controlsDisabled = false;
+        this.pressedKeys.clear();
+        this.isLeftMouseDown = false;
+
+        if (this.currentMode === 'orbit' && this.orbitCamera) {
+            this.orbitCamera.attachControl(this.canvas, false);
+        } else if (this.currentMode === 'walk' && this.walkCamera) {
+            this.walkCamera.attachControl(this.canvas, true);
+        }
+
+        console.log('[CameraSystem] Controls FORCE enabled');
+    }
+
+    /**
+     * Check if controls are currently disabled
+     */
+    areControlsDisabled(): boolean {
+        return this.controlsDisabled;
+    }
+
+    // =========================================================================
+    // PRIVATE - CAMERA CREATION
+    // =========================================================================
+
+    /**
+     * Create the orbit camera for standard 3D viewing
+     *
+     * Configured for model railway work with:
+     * - Very close minimum zoom for detail inspection
+     * - Smooth zoom and panning
+     * - Left-click freelook rotation
+     */
+    private createOrbitCamera(): void {
+        this.log('  Creating orbit camera...');
+
+        const dims = this.project.getBoardDimensions();
+        const cameraConfig = this.project.getCameraConfig();
+
+        // Initial target at baseboard surface
+        const targetY = dims.heightFromFloor;
+        const target = new Vector3(0, targetY, 0);
+
+        // Create ArcRotateCamera
+        this.orbitCamera = new ArcRotateCamera(
+            'orbitCamera',
+            Math.PI / 4,           // Alpha: 45° horizontal angle
+            Math.PI / 3,           // Beta: 60° vertical angle
+            2.0,                   // Radius: 2m distance
+            target,
+            this.scene
+        );
+
+        // -------------------------------------------------------------------------
+        // Clipping Planes
+        // -------------------------------------------------------------------------
+        this.orbitCamera.minZ = CAMERA_CONFIG.NEAR_CLIP_M;
+        this.orbitCamera.maxZ = CAMERA_CONFIG.FAR_CLIP_M;
+
+        // -------------------------------------------------------------------------
+        // Zoom Limits
+        // -------------------------------------------------------------------------
+        const configMinRadius = cameraConfig?.orbit?.minRadiusM;
+        const configMaxRadius = cameraConfig?.orbit?.maxRadiusM;
+
+        this.orbitCamera.lowerRadiusLimit = configMinRadius ?? CAMERA_CONFIG.MIN_ZOOM_M;
+        this.orbitCamera.upperRadiusLimit = configMaxRadius ?? CAMERA_CONFIG.MAX_ZOOM_M;
+
+        // -------------------------------------------------------------------------
+        // Vertical Angle Limits
+        // -------------------------------------------------------------------------
+        this.orbitCamera.lowerBetaLimit = CAMERA_CONFIG.LOWER_BETA_LIMIT;
+        this.orbitCamera.upperBetaLimit = CAMERA_CONFIG.UPPER_BETA_LIMIT;
+
+        // -------------------------------------------------------------------------
+        // Input Sensitivity
+        // -------------------------------------------------------------------------
+        this.orbitCamera.wheelPrecision = CAMERA_CONFIG.WHEEL_PRECISION;
+        this.orbitCamera.panningSensibility = CAMERA_CONFIG.PAN_SENSIBILITY;
+        this.orbitCamera.pinchPrecision = CAMERA_CONFIG.PINCH_PRECISION;
+        this.orbitCamera.angularSensibilityX = CAMERA_CONFIG.ANGULAR_SENSIBILITY;
+        this.orbitCamera.angularSensibilityY = CAMERA_CONFIG.ANGULAR_SENSIBILITY;
+
+        // -------------------------------------------------------------------------
+        // Smooth Movement
+        // -------------------------------------------------------------------------
+        this.orbitCamera.inertia = CAMERA_CONFIG.INERTIA;
+        this.orbitCamera.panningInertia = CAMERA_CONFIG.INERTIA;
+
+        // -------------------------------------------------------------------------
+        // Advanced Features
+        // -------------------------------------------------------------------------
+
+        // Zoom towards cursor position for precise work
+        this.orbitCamera.zoomToMouseLocation = true;
+
+        // Natural pinch zoom on touch devices
+        this.orbitCamera.useNaturalPinchZoom = true;
+
+        // -------------------------------------------------------------------------
+        // Input Configuration
+        // -------------------------------------------------------------------------
+
+        // Attach with noPreventDefault=false to capture events properly
+        this.orbitCamera.attachControl(this.canvas, false);
+
+        // Configure which mouse buttons do what:
+        // - Button 0 (Left): Rotation/freelook
+        // - Button 1 (Middle): Panning (already default)
+        // - Button 2 (Right): We'll leave for context menu
+
+        // ArcRotateCamera uses left button for rotation by default
+        // This is exactly what we want for freelook
+
+        this.log('  ✓ Orbit camera created');
+        this.log(`    Zoom range: ${this.orbitCamera.lowerRadiusLimit}m - ${this.orbitCamera.upperRadiusLimit}m`);
+    }
+
+    /**
+     * Create the walk camera for first-person viewing
+     *
+     * Positioned at realistic eye height for experiencing
+     * the layout from a human perspective
+     */
+    private createWalkCamera(): void {
+        this.log('  Creating walk camera...');
+
+        const dims = this.project.getBoardDimensions();
+        const cameraConfig = this.project.getCameraConfig();
+
+        // Eye height from config or default
+        const eyeHeight = cameraConfig?.walk?.eyeHeightM ?? CAMERA_CONFIG.DEFAULT_EYE_HEIGHT;
+        const startPosition = new Vector3(0, eyeHeight, -1.0);
+
+        // Create UniversalCamera
+        this.walkCamera = new UniversalCamera(
+            'walkCamera',
+            startPosition,
+            this.scene
+        );
+
+        // -------------------------------------------------------------------------
+        // Clipping Planes
+        // -------------------------------------------------------------------------
+        this.walkCamera.minZ = CAMERA_CONFIG.NEAR_CLIP_M;
+        this.walkCamera.maxZ = CAMERA_CONFIG.FAR_CLIP_M;
+
+        // -------------------------------------------------------------------------
+        // Initial Target
+        // -------------------------------------------------------------------------
+        this.walkCamera.setTarget(new Vector3(0, dims.heightFromFloor, 0));
+
+        // -------------------------------------------------------------------------
+        // Movement Settings
+        // -------------------------------------------------------------------------
+        this.walkCamera.speed = CAMERA_CONFIG.WALK_SPEED;
+        this.walkCamera.angularSensibility = CAMERA_CONFIG.ANGULAR_SENSIBILITY;
+
+        // WASD keys for walk camera (codes for W, S, A, D)
+        this.walkCamera.keysUp = [87];     // W
+        this.walkCamera.keysDown = [83];   // S
+        this.walkCamera.keysLeft = [65];   // A
+        this.walkCamera.keysRight = [68];  // D
+
+        this.log('  ✓ Walk camera created');
+        this.log(`    Eye height: ${eyeHeight}m`);
+    }
+
+    // =========================================================================
+    // PRIVATE - INPUT HANDLING
+    // =========================================================================
+
+    /**
+     * Setup all input event handlers
+     *
+     * Registers listeners for keyboard, mouse, and window focus events
+     */
+    private setupInputHandlers(): void {
+        this.log('  Setting up input handlers...');
+
+        // Create bound handler references for cleanup
+        this.boundHandlers = {
+            keyDown: this.handleKeyDown.bind(this),
+            keyUp: this.handleKeyUp.bind(this),
+            windowBlur: this.handleWindowBlur.bind(this),
+            windowFocus: this.handleWindowFocus.bind(this),
+            mouseDown: this.handleMouseDown.bind(this),
+            mouseUp: this.handleMouseUp.bind(this),
+            visibilityChange: this.handleVisibilityChange.bind(this)
+        };
+
+        // -------------------------------------------------------------------------
+        // Keyboard Events
+        // -------------------------------------------------------------------------
+        document.addEventListener('keydown', this.boundHandlers.keyDown);
+        document.addEventListener('keyup', this.boundHandlers.keyUp);
+
+        // -------------------------------------------------------------------------
+        // Mouse Events (for freelook state tracking)
+        // -------------------------------------------------------------------------
+        this.canvas.addEventListener('mousedown', this.boundHandlers.mouseDown);
+        document.addEventListener('mouseup', this.boundHandlers.mouseUp);
+
+        // -------------------------------------------------------------------------
+        // Window Focus Events
+        // -------------------------------------------------------------------------
+        window.addEventListener('blur', this.boundHandlers.windowBlur);
+        window.addEventListener('focus', this.boundHandlers.windowFocus);
+        document.addEventListener('visibilitychange', this.boundHandlers.visibilityChange);
+
+        this.log('  ✓ Input handlers configured');
+    }
+
+    /**
+     * Handle keydown events
+     *
+     * Processes WASD/QE movement keys and Shift modifier
+     */
+    private handleKeyDown(event: KeyboardEvent): void {
+        const code = event.code;
+
+        // Identify movement and modifier keys
+        const isMovementKey = this.isMovementKey(code);
+        const isShiftKey = code === 'ShiftLeft' || code === 'ShiftRight';
+
+        // Only handle movement-related keys
+        if (!isMovementKey && !isShiftKey) {
+            return;
+        }
+
+        // Ignore key repeat events
+        if (event.repeat) {
+            return;
+        }
+
+        // Check if movement is blocked by external system
+        if (isMovementKey && this.shouldBlockMovementCallback?.()) {
+            this.log(`[CameraSystem] Movement blocked - key ${code} ignored`);
+            return;
+        }
+
+        // Track pressed key
+        this.pressedKeys.add(code);
+
+        this.log(`[CameraSystem] Key DOWN: ${code}`);
+
+        // Start movement loop if movement key pressed
+        if (isMovementKey && this.currentMode === 'orbit') {
+            this.startMovementLoop();
+        }
+    }
+
+    /**
+     * Handle keyup events
+     *
+     * Removes keys from pressed state
+     */
+    private handleKeyUp(event: KeyboardEvent): void {
+        const code = event.code;
+
+        // Remove from pressed keys
+        this.pressedKeys.delete(code);
+
+        this.log(`[CameraSystem] Key UP: ${code}`);
+    }
+
+    /**
+     * Handle mouse down events
+     *
+     * Tracks left mouse button state for freelook
+     */
+    private handleMouseDown(event: MouseEvent): void {
+        if (event.button === 0) {
+            this.isLeftMouseDown = true;
+            this.log('[CameraSystem] Left mouse DOWN - freelook active');
+        }
+    }
+
+    /**
+     * Handle mouse up events
+     *
+     * Clears left mouse button state and checks if controls need restoration
+     */
+    private handleMouseUp(event: MouseEvent): void {
+        if (event.button === 0) {
+            this.isLeftMouseDown = false;
+            this.log('[CameraSystem] Left mouse UP - freelook ended');
+
+            // Safety: If controls are disabled but no active drag, try to restore
+            // This handles cases where external code forgot to call enableControls()
+            if (this.controlsDisabled && this.disableCount > 0) {
+                // Use a small delay to let any drag operation complete
+                setTimeout(() => {
+                    if (this.controlsDisabled && this.disableCount > 0) {
+                        console.warn('[CameraSystem] Controls still disabled after mouseup - auto-restoring');
+                        this.forceEnableControls();
+                    }
+                }, 100);
+            }
+        }
+    }
+
+    /**
+     * Handle window blur (losing focus)
+     *
+     * Clears all input state to prevent stuck keys
+     */
+    private handleWindowBlur(): void {
+        this.log('[CameraSystem] Window blur - clearing input state');
+        this.clearInputState();
+    }
+
+    /**
+     * Handle window focus (gaining focus)
+     *
+     * Ensures clean state when window regains focus
+     */
+    private handleWindowFocus(): void {
+        this.log('[CameraSystem] Window focus - input state ready');
+    }
+
+    /**
+     * Handle visibility change (tab switching)
+     *
+     * Clears input state when tab becomes hidden
+     */
+    private handleVisibilityChange(): void {
+        if (document.hidden) {
+            this.log('[CameraSystem] Tab hidden - clearing input state');
+            this.clearInputState();
+        }
+    }
+
+    /**
+     * Clear all input tracking state
+     */
+    private clearInputState(): void {
+        this.pressedKeys.clear();
+        this.isLeftMouseDown = false;
+        this.stopMovementLoop();
+    }
+
+    /**
+     * Check if a key code is a movement key
+     */
+    private isMovementKey(code: string): boolean {
+        return code === 'KeyW' ||
+            code === 'KeyS' ||
+            code === 'KeyA' ||
+            code === 'KeyD' ||
+            code === 'KeyQ' ||
+            code === 'KeyE';
+    }
+
+    /**
+     * Check if any movement key is currently pressed
+     */
+    private hasMovementKeyPressed(): boolean {
+        return this.pressedKeys.has('KeyW') ||
+            this.pressedKeys.has('KeyS') ||
+            this.pressedKeys.has('KeyA') ||
+            this.pressedKeys.has('KeyD') ||
+            this.pressedKeys.has('KeyQ') ||
+            this.pressedKeys.has('KeyE');
+    }
+
+    // =========================================================================
+    // PRIVATE - MOVEMENT LOOP
+    // =========================================================================
+
+    /**
+     * Start the movement animation loop
+     *
+     * Continuously processes movement while keys are held
+     */
+    private startMovementLoop(): void {
+        // Don't start if already running
+        if (this.movementAnimationId !== null) {
+            return;
+        }
+
+        this.log('[CameraSystem] Movement loop STARTED');
+
+        const loop = (): void => {
+            // Check continue conditions
+            const shouldContinue =
+                this.hasMovementKeyPressed() &&
+                this.currentMode === 'orbit' &&
+                !this.shouldBlockMovementCallback?.();
+
+            if (shouldContinue) {
+                this.processMovement();
+                this.movementAnimationId = requestAnimationFrame(loop);
+            } else {
+                this.log('[CameraSystem] Movement loop STOPPED');
+                this.movementAnimationId = null;
+            }
+        };
+
+        this.movementAnimationId = requestAnimationFrame(loop);
+    }
+
+    /**
+     * Stop the movement animation loop
+     */
+    private stopMovementLoop(): void {
+        if (this.movementAnimationId !== null) {
+            cancelAnimationFrame(this.movementAnimationId);
+            this.movementAnimationId = null;
+        }
+    }
+
+    /**
+     * Process camera movement based on pressed keys
+     *
+     * Uses camera's forward direction projected onto XZ plane
+     * so W always moves "forward" relative to camera view
+     */
+    private processMovement(): void {
+        if (!this.orbitCamera) {
+            return;
+        }
+
+        // -------------------------------------------------------------------------
+        // Calculate Speed
+        // -------------------------------------------------------------------------
+        const isShiftHeld = this.pressedKeys.has('ShiftLeft') ||
+            this.pressedKeys.has('ShiftRight');
+        const speedMultiplier = isShiftHeld ? CAMERA_CONFIG.FAST_MULTIPLIER : 1.0;
+
+        const moveSpeed = CAMERA_CONFIG.MOVE_SPEED * speedMultiplier;
+        const verticalSpeed = CAMERA_CONFIG.VERTICAL_SPEED * speedMultiplier;
+
+        // -------------------------------------------------------------------------
+        // Calculate Movement Vectors
+        // -------------------------------------------------------------------------
+
+        // Get camera's forward direction
+        const forwardRay = this.orbitCamera.getForwardRay();
+        const forward3D = forwardRay.direction;
+
+        // Project forward onto XZ plane (horizontal movement only)
+        const forward = new Vector3(forward3D.x, 0, forward3D.z);
+
+        // Handle edge case: camera looking straight up/down
+        if (forward.lengthSquared() < 1e-8) {
+            // Fall back to alpha-based forward
+            forward.set(
+                Math.sin(this.orbitCamera.alpha),
+                0,
+                Math.cos(this.orbitCamera.alpha)
+            );
+        }
+        forward.normalize();
+
+        // Calculate right vector (perpendicular to forward on XZ plane)
+        const right = Vector3.Cross(Vector3.Up(), forward).normalize();
+
+        // -------------------------------------------------------------------------
+        // Accumulate Movement Delta
+        // -------------------------------------------------------------------------
+        const delta = Vector3.Zero();
+
+        // W/S - Forward/Backward
+        if (this.pressedKeys.has('KeyW')) {
+            delta.addInPlace(forward.scale(moveSpeed));
+        }
+        if (this.pressedKeys.has('KeyS')) {
+            delta.addInPlace(forward.scale(-moveSpeed));
+        }
+
+        // A/D - Strafe Left/Right
+        if (this.pressedKeys.has('KeyA')) {
+            delta.addInPlace(right.scale(-moveSpeed));
+        }
+        if (this.pressedKeys.has('KeyD')) {
+            delta.addInPlace(right.scale(moveSpeed));
+        }
+
+        // Q/E - Down/Up (vertical)
+        if (this.pressedKeys.has('KeyQ')) {
+            delta.addInPlace(new Vector3(0, -verticalSpeed, 0));
+        }
+        if (this.pressedKeys.has('KeyE')) {
+            delta.addInPlace(new Vector3(0, verticalSpeed, 0));
+        }
+
+        // Skip if no movement
+        if (delta.lengthSquared() < 1e-12) {
+            return;
+        }
+
+        // -------------------------------------------------------------------------
+        // Apply Movement
+        // -------------------------------------------------------------------------
+
+        // Move both position and target together (maintains orbit relationship)
+        this.orbitCamera.position.addInPlace(delta);
+        this.orbitCamera.target.addInPlace(delta);
+
+        // -------------------------------------------------------------------------
+        // Apply Bounds
+        // -------------------------------------------------------------------------
+        this.applyTargetBounds();
+
+        this.log(`[CameraSystem] Moved: (${delta.x.toFixed(4)}, ${delta.y.toFixed(4)}, ${delta.z.toFixed(4)})`);
+    }
+
+    /**
+     * Apply position bounds to camera target
+     *
+     * Keeps camera within reasonable scene bounds
+     */
+    private applyTargetBounds(): void {
+        if (!this.orbitCamera) {
+            return;
+        }
+
+        const target = this.orbitCamera.target;
+
+        // Clamp vertical position
+        target.y = Math.max(
+            CAMERA_CONFIG.MIN_TARGET_HEIGHT,
+            Math.min(target.y, CAMERA_CONFIG.MAX_TARGET_HEIGHT)
+        );
+
+        // Clamp horizontal distance from origin
+        const horizontalDistance = Math.sqrt(target.x * target.x + target.z * target.z);
+
+        if (horizontalDistance > CAMERA_CONFIG.MAX_HORIZONTAL_DISTANCE) {
+            const scale = CAMERA_CONFIG.MAX_HORIZONTAL_DISTANCE / horizontalDistance;
+            target.x *= scale;
+            target.z *= scale;
+        }
+    }
+
+    // =========================================================================
+    // PRIVATE - DEBUG UTILITIES
+    // =========================================================================
+
+    /**
+     * Register debug utilities on window object
+     */
+    private registerDebugUtilities(): void {
+        window.cameraDebug = {
+            getState: () => ({
+                mode: this.currentMode,
+                pressedKeys: Array.from(this.pressedKeys),
+                isLeftMouseDown: this.isLeftMouseDown,
+                isMovementBlocked: this.isMovementBlocked(),
+                controlsDisabled: this.controlsDisabled,
+                disableCount: this.disableCount,
+                orbitTarget: this.orbitCamera?.target.toString(),
+                orbitRadius: this.orbitCamera?.radius,
+                orbitAlpha: this.orbitCamera?.alpha,
+                orbitBeta: this.orbitCamera?.beta
+            }),
+            resetCamera: () => this.resetOrbitCamera(),
+            setDebug: (enabled: boolean) => {
+                this.debugEnabled = enabled;
+                console.log(`[CameraSystem] Debug logging ${enabled ? 'enabled' : 'disabled'}`);
+            },
+            logConfig: () => {
+                console.log('[CameraSystem] Configuration:', CAMERA_CONFIG);
+            },
+            forceEnable: () => {
+                this.forceEnableControls();
+                console.log('[CameraSystem] Camera controls force-enabled via debug');
+            },
+            disable: () => {
+                this.disableControls();
+            },
+            enable: () => {
+                this.enableControls();
+            }
+        };
+
+        this.log('[CameraSystem] Debug utilities registered (window.cameraDebug)');
+    }
+
+    /**
+     * Log controls guide to console
+     */
+    private logControlsGuide(): void {
+        console.log('');
+        console.log('=== Camera Controls ===');
+        console.log('  WASD        : Pan camera (move around scene)');
+        console.log('  Q/E         : Move camera down/up');
+        console.log('  Scroll      : Zoom in/out');
+        console.log('  Left Click  : Hold and drag for freelook (rotate view)');
+        console.log('  Shift       : Hold for faster movement');
+        console.log('  V           : Toggle camera mode (orbit/walk)');
+        console.log('  Home        : Reset camera to default view');
+        console.log('');
+        console.log('  Debug: window.cameraDebug.forceEnable() if camera stuck');
+        console.log('=======================');
+        console.log('');
+    }
+
+    /**
+     * Conditional logging (only when debug enabled)
+     */
+    private log(message: string): void {
+        if (this.debugEnabled) {
+            console.log(message);
+        }
     }
 
     // =========================================================================
     // CLEANUP
     // =========================================================================
 
+    /**
+     * Dispose of all resources and event listeners
+     *
+     * Call this when the camera system is no longer needed
+     */
     dispose(): void {
-        console.log('[CameraSystem] Disposing cameras...');
+        console.log('[CameraSystem] Disposing...');
 
+        // Stop movement
         this.stopMovementLoop();
+        this.clearInputState();
 
+        // Reset control state
+        this.controlsDisabled = false;
+        this.disableCount = 0;
+
+        // Remove event listeners
         if (this.boundHandlers) {
             document.removeEventListener('keydown', this.boundHandlers.keyDown);
             document.removeEventListener('keyup', this.boundHandlers.keyUp);
-            window.removeEventListener('blur', this.boundHandlers.blur);
+            this.canvas.removeEventListener('mousedown', this.boundHandlers.mouseDown);
+            document.removeEventListener('mouseup', this.boundHandlers.mouseUp);
+            window.removeEventListener('blur', this.boundHandlers.windowBlur);
+            window.removeEventListener('focus', this.boundHandlers.windowFocus);
+            document.removeEventListener('visibilitychange', this.boundHandlers.visibilityChange);
             this.boundHandlers = null;
         }
 
-        this.pressedKeys.clear();
+        // Clear callback
+        this.shouldBlockMovementCallback = null;
 
+        // Remove debug utilities
+        if (window.cameraDebug) {
+            delete window.cameraDebug;
+        }
+
+        // Dispose cameras
         if (this.orbitCamera) {
             this.orbitCamera.detachControl();
             this.orbitCamera.dispose();
@@ -524,6 +1272,12 @@ export class CameraSystem {
             this.walkCamera = null;
         }
 
-        console.log('[CameraSystem] Cameras disposed');
+        console.log('[CameraSystem] Disposed');
     }
 }
+
+// =============================================================================
+// EXPORTS
+// =============================================================================
+
+export { CAMERA_CONFIG };

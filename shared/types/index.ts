@@ -1,77 +1,124 @@
 ﻿/**
- * Shared Types - Index
+ * Shared Types Index
  * 
  * Path: shared/types/index.ts
  * 
- * Re-exports all type definitions for easy importing
+ * Re-exports all shared type definitions for easy importing.
+ * 
+ * @example
+ * ```typescript
+ * import { 
+ *     RollingStockCategory, 
+ *     AssetCategory,
+ *     ModelDimensions 
+ * } from '../../shared/types';
+ * ```
  * 
  * @module SharedTypes
+ * @version 1.0.0
  */
 
 // ============================================================================
-// EXISTING TYPE EXPORTS
+// RAILWAY TYPES (Core unified types)
 // ============================================================================
 
-// Uncomment and add your existing type exports here
-// export * from './common.types';
-// export * from './project.types';
-// export * from './layout.types';
+export {
+    // Rolling stock categories
+    RollingStockCategory,
+    ROLLING_STOCK_LABELS,
+    ROLLING_STOCK_ICONS,
+
+    // Scenery categories
+    SceneryCategory,
+    SCENERY_LABELS,
+    SCENERY_ICONS,
+
+    // Asset categories (top-level)
+    AssetCategory,
+    ASSET_CATEGORY_LABELS,
+    ASSET_CATEGORY_ICONS,
+
+    // Outliner node types
+    OutlinerNodeType,
+    DefaultOutlinerCategory,
+    NODE_TYPE_TO_CATEGORY,
+    NODE_TYPE_ICONS,
+    OUTLINER_CATEGORY_ICONS,
+
+    // Scaling modes
+    ScalingMode,
+    SCALING_MODE_LABELS,
+    SCALING_MODE_DESCRIPTIONS,
+
+    // Dimensions
+    ModelDimensions,
+    createModelDimensions,
+
+    // Scale presets
+    ScalePreset,
+    CategoryPresets,
+    ScalePivotPoint,
+    ScaleConstraints,
+    DEFAULT_SCALE_CONSTRAINTS,
+    DEFAULT_CATEGORY_PRESETS,
+
+    // Asset metadata
+    AssetScalingConfig,
+    AssetMetadata,
+
+    // Transform
+    Transform3D,
+    IDENTITY_TRANSFORM,
+
+    // Scale result
+    ScaleResult,
+
+    // Category mapping
+    MODEL_CATEGORY_MAP,
+    getAssetCategory,
+    getOutlinerNodeType,
+    isRollingStockCategory,
+
+    // Type guards
+    isValidRollingStockCategory,
+    isValidAssetCategory,
+    isValidScalingMode,
+} from './railway.types';
+
+// Type exports
+export type {
+    RollingStockCategory,
+    SceneryCategory,
+    AssetCategory,
+    OutlinerNodeType,
+    DefaultOutlinerCategory,
+    ScalingMode,
+    ScalePivotPoint,
+} from './railway.types';
 
 // ============================================================================
 // ASSET LIBRARY TYPES
 // ============================================================================
 
-export * from './assetLibrary.types';
-
-// ============================================================================
-// PLACED ITEM TYPES
-// ============================================================================
-
-export * from './placedItem.types';
-
-// ============================================================================
-// ASSET LIBRARY TYPE RE-EXPORTS
-// ============================================================================
-
-export type {
-    RollingStockCategory,
-    AssetMetadata,
+export {
+    // Library structure
     AssetLibrary,
+    DEFAULT_ASSET_LIBRARY,
+
+    // Import/export
     AssetImportOptions,
     AssetImportResult,
-    AssetScalingMode,
+
+    // Storage
     AssetStorageConfig,
+    DEFAULT_STORAGE_CONFIG,
+
+    // UI
     AssetDisplayItem,
     AssetSelectionCallback,
-    AssetRemovalCallback
+    AssetRemovalCallback,
+
+    // Filter & stats
+    AssetLibraryFilter,
+    AssetLibraryStats,
 } from './assetLibrary.types';
-
-export {
-    ROLLING_STOCK_CATEGORY_LABELS,
-    ROLLING_STOCK_CATEGORY_ICONS,
-    DEFAULT_ASSET_LIBRARY,
-    DEFAULT_STORAGE_CONFIG
-} from './assetLibrary.types';
-
-// ============================================================================
-// PLACED ITEM TYPE RE-EXPORTS
-// ============================================================================
-
-export type {
-    PlacedItemType,
-    PlacedItemBase,
-    PlacedTrackItem,
-    PlacedRollingStockItem,
-    PlacedSceneryItem,
-    PlacedItem,
-    OutlinerCategory,
-    OutlinerSelectCallback,
-    OutlinerVisibilityCallback,
-    OutlinerDeleteCallback
-} from './placedItem.types';
-
-export {
-    DEFAULT_OUTLINER_CATEGORIES,
-    TRACK_TYPE_ICONS,
-    ROLLING_STOCK_ICONS
-} from './placedItem.types';

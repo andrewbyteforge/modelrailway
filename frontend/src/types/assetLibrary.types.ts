@@ -1,123 +1,70 @@
 /**
  * assetLibrary.types.ts - Type definitions for persistent asset library
  * 
- * Path: shared/types/assetLibrary.types.ts
+ * Path: frontend/src/types/assetLibrary.types.ts
  * 
- * Defines types for:
- * - Rolling stock categories (Trains, Carriages, Freight)
- * - Asset metadata and storage
- * - Import/export operations
+ * Defines types for asset library operations.
+ * Core types are imported from railway.types.ts for consistency.
  * 
  * @module AssetLibraryTypes
- * @version 1.0.0
+ * @version 2.0.0 - Refactored to use unified types
  */
 
 // ============================================================================
-// ROLLING STOCK CATEGORIES
+// IMPORTS FROM UNIFIED TYPES
 // ============================================================================
 
-/**
- * Categories for rolling stock assets
- * 
- * @description
- * - trains: Locomotives/engines that provide motive power
- * - carriages: Passenger coaches and carriages
- * - freight: Freight wagons, tankers, hoppers, etc.
- */
-export type RollingStockCategory = 'trains' | 'carriages' | 'freight';
+// Type-only imports (erased at runtime)
+import type {
+    RollingStockCategory,
+    AssetCategory,
+    SceneryCategory,
+    ScalingMode,
+    AssetScalingConfig,
+    ModelDimensions,
+    AssetMetadata,
+} from './railway.types';
 
-/**
- * Human-readable labels for rolling stock categories
- */
-export const ROLLING_STOCK_CATEGORY_LABELS: Record<RollingStockCategory, string> = {
-    trains: 'Locomotives',
-    carriages: 'Passenger Carriages',
-    freight: 'Freight Wagons'
+// Value imports (exist at runtime)
+import {
+    ROLLING_STOCK_LABELS,
+    ROLLING_STOCK_ICONS,
+    ASSET_CATEGORY_LABELS,
+    ASSET_CATEGORY_ICONS,
+} from './railway.types';
+
+// ============================================================================
+// RE-EXPORTS FOR BACKWARDS COMPATIBILITY
+// ============================================================================
+
+// Re-export types
+export type {
+    RollingStockCategory,
+    AssetCategory,
+    SceneryCategory,
+    ScalingMode,
+    AssetScalingConfig,
+    ModelDimensions,
+    AssetMetadata,
 };
 
-/**
- * Icons for rolling stock categories (emoji)
- */
-export const ROLLING_STOCK_CATEGORY_ICONS: Record<RollingStockCategory, string> = {
-    trains: '🚂',
-    carriages: '🚃',
-    freight: '🚛'
+// Re-export values
+export {
+    ROLLING_STOCK_LABELS,
+    ROLLING_STOCK_ICONS,
+    ASSET_CATEGORY_LABELS,
+    ASSET_CATEGORY_ICONS,
 };
 
-// ============================================================================
-// ASSET METADATA
-// ============================================================================
+// Legacy alias for backwards compatibility
+export type AssetScalingMode = ScalingMode;
 
-/**
- * Scaling mode for imported assets
- */
-export type AssetScalingMode =
-    | 'real-world'      // Scale based on real-world dimensions
-    | 'reference'       // Scale based on reference dimensions provided
-    | 'direct-scale'    // Apply direct scale factor
-    | 'as-is';          // Use model as-is
-
-/**
- * Metadata for an imported asset
- */
-export interface AssetMetadata {
-    /** Unique identifier for the asset */
-    id: string;
-
-    /** Display name (user-provided or derived from filename) */
-    name: string;
-
-    /** Original filename */
-    originalFilename: string;
-
-    /** Category this asset belongs to */
-    category: RollingStockCategory;
-
-    /** Relative path to the asset file in storage */
-    filePath: string;
-
-    /** Relative path to thumbnail image (if generated) */
-    thumbnailPath?: string;
-
-    /** Scaling configuration */
-    scaling: {
-        mode: AssetScalingMode;
-        /** Scale factor applied (for direct-scale mode) */
-        scaleFactor?: number;
-        /** Reference length in mm (for reference mode) */
-        referenceLengthMm?: number;
-        /** Computed uniform scale */
-        computedScale?: number;
-    };
-
-    /** Original file size in bytes */
-    fileSize: number;
-
-    /** Bounding box dimensions in meters after scaling */
-    boundingBox?: {
-        width: number;
-        height: number;
-        depth: number;
-    };
-
-    /** Timestamp when asset was imported */
-    importedAt: string;
-
-    /** Timestamp when asset was last used */
-    lastUsedAt?: string;
-
-    /** Number of times this asset has been placed */
-    usageCount: number;
-
-    /** User-provided tags for organization */
-    tags?: string[];
-
-    /** User-provided description */
-    description?: string;
-}
+// Legacy labels (map old names to new)
+export const ROLLING_STOCK_CATEGORY_LABELS = ROLLING_STOCK_LABELS;
+export const ROLLING_STOCK_CATEGORY_ICONS = ROLLING_STOCK_ICONS;
 
 // ============================================================================
-// ASSET LIBRARY
+// ASSET LIBRARY STRUCTURE
 // ============================================================================
 
 /**
@@ -133,21 +80,45 @@ export interface AssetLibrary {
     /** Map of asset ID to metadata */
     assets: Record<string, AssetMetadata>;
 
-    /** Quick lookup by category */
-    categoryIndex: Record<RollingStockCategory, string[]>;
+    /** Quick lookup: asset IDs by top-level category */
+    categoryIndex: Record<AssetCategory, string[]>;
+
+    /** Quick lookup: rolling stock IDs by sub-category */
+    rollingStockIndex: Record<RollingStockCategory, string[]>;
+
+    /** Quick lookup: scenery IDs by sub-category */
+    sceneryIndex: Record<SceneryCategory, string[]>;
 }
 
 /**
  * Default empty asset library
  */
 export const DEFAULT_ASSET_LIBRARY: AssetLibrary = {
-    schemaVersion: '1.0.0',
+    schemaVersion: '2.0.0',
     lastModified: new Date().toISOString(),
     assets: {},
     categoryIndex: {
-        trains: [],
-        carriages: [],
-        freight: []
+        rolling_stock: [],
+        scenery: [],
+        track: [],
+        baseboard: [],
+        light: [],
+        custom: []
+    },
+    rollingStockIndex: {
+        locomotive: [],
+        coach: [],
+        wagon: [],
+        other: []
+    },
+    sceneryIndex: {
+        building: [],
+        vegetation: [],
+        infrastructure: [],
+        vehicle: [],
+        figure: [],
+        accessory: [],
+        other: []
     }
 };
 
@@ -162,18 +133,20 @@ export interface AssetImportOptions {
     /** File to import (File object from browser) */
     file: File;
 
-    /** Category to import into */
-    category: RollingStockCategory;
+    /** Top-level category */
+    category: AssetCategory;
+
+    /** Sub-category for rolling stock */
+    rollingStockCategory?: RollingStockCategory;
+
+    /** Sub-category for scenery */
+    sceneryCategory?: SceneryCategory;
 
     /** Display name (optional, defaults to filename) */
     name?: string;
 
     /** Scaling configuration */
-    scaling: {
-        mode: AssetScalingMode;
-        scaleFactor?: number;
-        referenceLengthMm?: number;
-    };
+    scaling: AssetScalingConfig;
 
     /** Optional description */
     description?: string;
@@ -186,13 +159,21 @@ export interface AssetImportOptions {
  * Result of an import operation
  */
 export interface AssetImportResult {
+    /** Whether import succeeded */
     success: boolean;
+
+    /** Asset ID if successful */
     assetId?: string;
+
+    /** Full metadata if successful */
+    metadata?: AssetMetadata;
+
+    /** Error message if failed */
     error?: string;
 }
 
 // ============================================================================
-// STORAGE PATHS
+// STORAGE CONFIGURATION
 // ============================================================================
 
 /**
@@ -216,7 +197,7 @@ export interface AssetStorageConfig {
  * Default storage configuration
  */
 export const DEFAULT_STORAGE_CONFIG: AssetStorageConfig = {
-    basePath: 'assets/rolling-stock',
+    basePath: 'assets/library',
     modelsDir: 'models',
     thumbnailsDir: 'thumbnails',
     manifestFilename: 'library.json'
@@ -230,19 +211,100 @@ export const DEFAULT_STORAGE_CONFIG: AssetStorageConfig = {
  * Asset item for display in sidebar
  */
 export interface AssetDisplayItem {
+    /** Asset ID */
     id: string;
+
+    /** Display name */
     name: string;
-    category: RollingStockCategory;
+
+    /** Top-level category */
+    category: AssetCategory;
+
+    /** Rolling stock sub-category (if applicable) */
+    rollingStockCategory?: RollingStockCategory;
+
+    /** Scenery sub-category (if applicable) */
+    sceneryCategory?: SceneryCategory;
+
+    /** Thumbnail URL */
     thumbnailUrl?: string;
+
+    /** Whether asset is currently loading */
     isLoading?: boolean;
+
+    /** Whether asset is currently selected */
+    isSelected?: boolean;
 }
 
 /**
  * Callback when an asset is selected for placement
  */
-export type AssetSelectionCallback = (assetId: string, category: RollingStockCategory) => void;
+export type AssetSelectionCallback = (
+    assetId: string,
+    category: AssetCategory,
+    subCategory?: RollingStockCategory | SceneryCategory
+) => void;
 
 /**
  * Callback for asset removal confirmation
  */
 export type AssetRemovalCallback = (assetId: string) => Promise<boolean>;
+
+// ============================================================================
+// FILTER & SEARCH
+// ============================================================================
+
+/**
+ * Filter options for asset library queries
+ */
+export interface AssetLibraryFilter {
+    /** Filter by top-level category */
+    category?: AssetCategory;
+
+    /** Filter by rolling stock sub-category */
+    rollingStockCategory?: RollingStockCategory;
+
+    /** Filter by scenery sub-category */
+    sceneryCategory?: SceneryCategory;
+
+    /** Filter by tags (any match) */
+    tags?: string[];
+
+    /** Search text (matches name, description) */
+    searchText?: string;
+
+    /** Sort field */
+    sortBy?: 'name' | 'importedAt' | 'lastUsedAt' | 'usageCount';
+
+    /** Sort direction */
+    sortOrder?: 'asc' | 'desc';
+
+    /** Maximum results */
+    limit?: number;
+}
+
+/**
+ * Statistics for the asset library
+ */
+export interface AssetLibraryStats {
+    /** Total number of assets */
+    totalAssets: number;
+
+    /** Count by top-level category */
+    byCategory: Record<AssetCategory, number>;
+
+    /** Count by rolling stock sub-category */
+    byRollingStock: Record<RollingStockCategory, number>;
+
+    /** Count by scenery sub-category */
+    byScenery: Record<SceneryCategory, number>;
+
+    /** Total storage used in bytes */
+    totalStorageBytes: number;
+
+    /** Most recently imported asset */
+    lastImported?: AssetMetadata;
+
+    /** Most frequently used asset */
+    mostUsed?: AssetMetadata;
+}

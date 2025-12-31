@@ -3,40 +3,69 @@
  * 
  * Path: frontend/src/types/scaling.types.ts
  * 
- * Comprehensive type definitions for the UE5-style uniform scaling system.
- * Supports gizmo handles, numeric input, hotkey+scroll, constraints,
- * and per-asset-type presets.
+ * Type definitions for the UE5-style uniform scaling system.
+ * Core types are imported from railway.types.ts for consistency.
  * 
  * @module ScalingTypes
  * @author Model Railway Workbench
- * @version 1.0.0
+ * @version 2.0.0 - Refactored to use unified types
  */
 
 // ============================================================================
-// ENUMS & CONSTANTS
+// IMPORTS FROM UNIFIED TYPES
 // ============================================================================
 
-/**
- * Asset categories that determine default scale behaviour
- * Each category has different pivot point and constraint defaults
- */
-export type ScalableAssetCategory =
-    | 'rolling-stock'   // Trains, carriages, wagons - pivot at centre
-    | 'building'        // Structures - pivot at base
-    | 'scenery'         // Trees, bushes, rocks - pivot at base
-    | 'infrastructure'  // Signals, posts, bridges - pivot at base
-    | 'track'           // Track pieces (usually not scaled)
-    | 'custom';         // User-defined pivot
+// Type-only imports (erased at runtime)
+import type {
+    AssetCategory,
+    RollingStockCategory,
+    ScalingMode,
+    ScalePreset,
+    CategoryPresets,
+    ScalePivotPoint,
+    ScaleConstraints,
+    ScaleResult,
+    ModelDimensions,
+} from './railway.types';
 
-/**
- * Pivot point options for scaling operations
- * Determines which point stays fixed while scaling
- */
-export type ScalePivotPoint =
-    | 'base-center'     // Bottom centre (buildings, trees)
-    | 'center'          // Volumetric centre (rolling stock)
-    | 'top-center'      // Top centre (hanging items)
-    | 'custom';         // User-defined position
+// Value imports (exist at runtime)
+import {
+    DEFAULT_SCALE_CONSTRAINTS,
+    DEFAULT_CATEGORY_PRESETS,
+    createModelDimensions,
+} from './railway.types';
+
+// ============================================================================
+// RE-EXPORTS FOR BACKWARDS COMPATIBILITY
+// ============================================================================
+
+// Re-export types
+export type {
+    AssetCategory,
+    RollingStockCategory,
+    ScalingMode,
+    ScalePreset,
+    CategoryPresets,
+    ScalePivotPoint,
+    ScaleConstraints,
+    ScaleResult,
+    ModelDimensions,
+};
+
+// Re-export values
+export {
+    DEFAULT_SCALE_CONSTRAINTS,
+    DEFAULT_CATEGORY_PRESETS,
+    createModelDimensions,
+};
+
+// Legacy aliases - maps old type names to new
+export type ScalableAssetCategory = AssetCategory;
+export type ObjectDimensions = ModelDimensions;
+
+// ============================================================================
+// GIZMO INTERACTION
+// ============================================================================
 
 /**
  * Scale gizmo interaction state
@@ -46,191 +75,6 @@ export type GizmoInteractionState =
     | 'hovering'        // Mouse over gizmo handle
     | 'dragging'        // Actively scaling
     | 'preview';        // Showing preview of scale change
-
-// ============================================================================
-// SCALE CONSTRAINTS
-// ============================================================================
-
-/**
- * Constraints applied to scaling operations
- * Prevents accidental extreme scaling
- */
-export interface ScaleConstraints {
-    /** Minimum allowed scale factor (e.g., 0.1 = 10%) */
-    minScale: number;
-
-    /** Maximum allowed scale factor (e.g., 5.0 = 500%) */
-    maxScale: number;
-
-    /** Snap increment when snapping is enabled (e.g., 0.05 = 5% steps) */
-    snapIncrement: number;
-
-    /** Whether snap-to-increment is enabled */
-    snapEnabled: boolean;
-
-    /** Whether constraints can be bypassed (e.g., with Shift key) */
-    allowBypass: boolean;
-
-    /** Key modifier that bypasses constraints */
-    bypassModifier: 'shift' | 'ctrl' | 'alt';
-}
-
-/**
- * Default constraints for different asset categories
- * 
- * Note: Minimum scale is 6% (0.06) for most categories to allow small details
- * while preventing objects from becoming invisible
- */
-export const DEFAULT_SCALE_CONSTRAINTS: Record<ScalableAssetCategory, ScaleConstraints> = {
-    'rolling-stock': {
-        minScale: 0.5,          // 50% minimum (prevent tiny trains - keeps realism)
-        maxScale: 2.0,          // 200% maximum (maintain realism)
-        snapIncrement: 0.05,    // 5% steps
-        snapEnabled: true,
-        allowBypass: true,
-        bypassModifier: 'shift'
-    },
-    'building': {
-        minScale: 0.06,         // 6% minimum (allows small distant buildings)
-        maxScale: 5.0,          // 500% maximum
-        snapIncrement: 0.05,    // 5% steps
-        snapEnabled: true,
-        allowBypass: true,
-        bypassModifier: 'shift'
-    },
-    'scenery': {
-        minScale: 0.06,         // 6% minimum (allows tiny details)
-        maxScale: 5.0,          // 500% maximum
-        snapIncrement: 0.05,    // 5% steps
-        snapEnabled: false,     // Free scaling for organic items
-        allowBypass: true,
-        bypassModifier: 'shift'
-    },
-    'infrastructure': {
-        minScale: 0.06,         // 6% minimum (allows small details)
-        maxScale: 2.0,          // 200% maximum
-        snapIncrement: 0.1,     // 10% steps
-        snapEnabled: true,
-        allowBypass: true,
-        bypassModifier: 'shift'
-    },
-    'track': {
-        minScale: 1.0,          // No scaling allowed
-        maxScale: 1.0,
-        snapIncrement: 0.0,
-        snapEnabled: false,
-        allowBypass: false,     // Never allow track scaling
-        bypassModifier: 'shift'
-    },
-    'custom': {
-        minScale: 0.06,         // 6% minimum
-        maxScale: 10.0,         // 1000% maximum
-        snapIncrement: 0.05,    // 5% steps
-        snapEnabled: true,
-        allowBypass: true,
-        bypassModifier: 'shift'
-    }
-};
-
-// ============================================================================
-// SCALE PRESETS
-// ============================================================================
-
-/**
- * A named scale preset for quick application
- */
-export interface ScalePreset {
-    /** Unique identifier */
-    id: string;
-
-    /** Display name */
-    name: string;
-
-    /** Scale factor to apply */
-    scaleFactor: number;
-
-    /** Optional description */
-    description?: string;
-
-    /** Icon identifier (emoji or icon class) */
-    icon?: string;
-}
-
-/**
- * Collection of presets for an asset category
- */
-export interface CategoryPresets {
-    /** Asset category these presets apply to */
-    category: ScalableAssetCategory;
-
-    /** Default scale for new items of this category */
-    defaultScale: number;
-
-    /** Default pivot point for this category */
-    defaultPivot: ScalePivotPoint;
-
-    /** Available presets for this category */
-    presets: ScalePreset[];
-}
-
-/**
- * Default presets for common asset categories
- */
-export const DEFAULT_CATEGORY_PRESETS: Record<ScalableAssetCategory, CategoryPresets> = {
-    'rolling-stock': {
-        category: 'rolling-stock',
-        defaultScale: 1.0,
-        defaultPivot: 'center',
-        presets: [
-            { id: 'oo-standard', name: 'OO Standard', scaleFactor: 1.0, icon: '🚂', description: 'Standard OO gauge (1:76.2)' },
-            { id: 'oo-small', name: 'Narrow Gauge', scaleFactor: 0.75, icon: '🚃', description: 'Smaller narrow gauge stock' },
-            { id: 'oo-large', name: 'Large', scaleFactor: 1.25, icon: '🚄', description: 'Larger continental stock' }
-        ]
-    },
-    'building': {
-        category: 'building',
-        defaultScale: 1.0,
-        defaultPivot: 'base-center',
-        presets: [
-            { id: 'building-standard', name: 'Standard', scaleFactor: 1.0, icon: '🏠', description: 'Standard OO scale building' },
-            { id: 'building-background', name: 'Background', scaleFactor: 0.75, icon: '🏘️', description: 'Forced perspective for distance' },
-            { id: 'building-foreground', name: 'Prominent', scaleFactor: 1.15, icon: '🏛️', description: 'Slightly larger for emphasis' }
-        ]
-    },
-    'scenery': {
-        category: 'scenery',
-        defaultScale: 1.0,
-        defaultPivot: 'base-center',
-        presets: [
-            { id: 'scenery-small', name: 'Small', scaleFactor: 0.5, icon: '🌱', description: 'Small plants/details' },
-            { id: 'scenery-medium', name: 'Medium', scaleFactor: 1.0, icon: '🌳', description: 'Standard size' },
-            { id: 'scenery-large', name: 'Large', scaleFactor: 1.5, icon: '🌲', description: 'Larger trees/features' }
-        ]
-    },
-    'infrastructure': {
-        category: 'infrastructure',
-        defaultScale: 1.0,
-        defaultPivot: 'base-center',
-        presets: [
-            { id: 'infra-standard', name: 'Standard', scaleFactor: 1.0, icon: '🚦', description: 'Standard OO scale' },
-            { id: 'infra-compact', name: 'Compact', scaleFactor: 0.85, icon: '📍', description: 'Slightly smaller' }
-        ]
-    },
-    'track': {
-        category: 'track',
-        defaultScale: 1.0,
-        defaultPivot: 'base-center',
-        presets: [
-            { id: 'track-standard', name: 'Standard', scaleFactor: 1.0, icon: '🛤️', description: 'Track cannot be scaled' }
-        ]
-    },
-    'custom': {
-        category: 'custom',
-        defaultScale: 1.0,
-        defaultPivot: 'base-center',
-        presets: []
-    }
-};
 
 // ============================================================================
 // SCALABLE OBJECT INTERFACE
@@ -245,7 +89,7 @@ export interface IScalable {
     id: string;
 
     /** Asset category for determining defaults */
-    category: ScalableAssetCategory;
+    category: AssetCategory;
 
     /** Current scale factor (1.0 = original size) */
     currentScale: number;
@@ -261,29 +105,21 @@ export interface IScalable {
 
     /** Whether this object's scale is locked */
     scaleLocked: boolean;
-}
 
-/**
- * Scale change event data
- */
-export interface ScaleChangeEvent {
-    /** Object being scaled */
-    objectId: string;
+    /** Original dimensions before any scaling */
+    originalDimensions: ModelDimensions;
 
-    /** Previous scale factor */
-    previousScale: number;
+    /** Apply a new scale factor */
+    setScale(scale: number): void;
 
-    /** New scale factor */
-    newScale: number;
+    /** Reset to original scale */
+    resetScale(): void;
 
-    /** Source of the scale change */
-    source: 'gizmo' | 'panel' | 'hotkey' | 'preset' | 'api';
+    /** Lock/unlock scaling */
+    setScaleLock(locked: boolean): void;
 
-    /** Whether this is a preview (not committed) */
-    isPreview: boolean;
-
-    /** Timestamp of the change */
-    timestamp: number;
+    /** Get current scaled dimensions */
+    getScaledDimensions(): ModelDimensions;
 }
 
 // ============================================================================
@@ -291,54 +127,54 @@ export interface ScaleChangeEvent {
 // ============================================================================
 
 /**
- * Visual configuration for the scale gizmo
+ * Configuration for the scale gizmo appearance
  */
 export interface ScaleGizmoConfig {
-    /** Size of the gizmo handles in world units */
-    handleSize: number;
+    /** Size of the gizmo in world units */
+    gizmoSize: number;
 
-    /** Color of handles in idle state */
-    idleColor: { r: number; g: number; b: number };
+    /** Color when idle (hex) */
+    idleColor: string;
 
-    /** Color of handles when hovered */
-    hoverColor: { r: number; g: number; b: number };
+    /** Color when hovered (hex) */
+    hoverColor: string;
 
-    /** Color of handles when actively dragging */
-    activeColor: { r: number; g: number; b: number };
+    /** Color when dragging (hex) */
+    activeColor: string;
 
-    /** Opacity of gizmo (0-1) */
-    opacity: number;
+    /** Opacity when idle (0-1) */
+    idleOpacity: number;
 
-    /** Whether to show dimension labels on handles */
-    showLabels: boolean;
+    /** Opacity when active (0-1) */
+    activeOpacity: number;
 
-    /** Distance from object centre to handles */
-    handleOffset: number;
+    /** Show axis indicators */
+    showAxes: boolean;
 
-    /** Whether gizmo auto-scales based on camera distance */
-    autoScale: boolean;
+    /** Show scale value tooltip */
+    showTooltip: boolean;
 
-    /** Minimum visible size for auto-scale */
-    minVisibleSize: number;
+    /** Minimum visible distance (camera units) */
+    minVisibleDistance: number;
 
-    /** Maximum visible size for auto-scale */
-    maxVisibleSize: number;
+    /** Maximum visible distance (camera units) */
+    maxVisibleDistance: number;
 }
 
 /**
  * Default gizmo configuration
  */
 export const DEFAULT_GIZMO_CONFIG: ScaleGizmoConfig = {
-    handleSize: 0.015,          // 15mm handles
-    idleColor: { r: 1, g: 0.8, b: 0 },      // Yellow
-    hoverColor: { r: 1, g: 1, b: 0 },       // Bright yellow
-    activeColor: { r: 1, g: 0.5, b: 0 },    // Orange
-    opacity: 0.9,
-    showLabels: true,
-    handleOffset: 0.02,         // 20mm from object bounds
-    autoScale: true,
-    minVisibleSize: 0.01,       // Minimum handle size
-    maxVisibleSize: 0.05        // Maximum handle size
+    gizmoSize: 0.1,
+    idleColor: '#ffcc00',
+    hoverColor: '#ffff00',
+    activeColor: '#ff9900',
+    idleOpacity: 0.6,
+    activeOpacity: 1.0,
+    showAxes: false,
+    showTooltip: true,
+    minVisibleDistance: 0.1,
+    maxVisibleDistance: 5.0
 };
 
 // ============================================================================
@@ -430,7 +266,7 @@ export const DEFAULT_HOTKEY_CONFIG: ScaleHotkeyConfig = {
     scaleKey: 's',
     fineModifier: 'shift',
     fineMultiplier: 0.2,
-    scrollSensitivity: 5,       // 5% per scroll notch
+    scrollSensitivity: 5,
     resetKey: 'r',
     lockKey: 'l'
 };
@@ -483,23 +319,23 @@ export const INITIAL_SCALE_MANAGER_STATE: ScaleManagerState = {
 };
 
 // ============================================================================
-// EVENT TYPES
+// SCALE EVENTS
 // ============================================================================
 
 /**
  * Scale system event types
  */
 export type ScaleEventType =
-    | 'scale-start'         // Scaling operation started
-    | 'scale-preview'       // Scale preview updated
-    | 'scale-commit'        // Scale change committed
-    | 'scale-cancel'        // Scale operation cancelled
-    | 'scale-reset'         // Scale reset to original
-    | 'lock-changed'        // Scale lock toggled
-    | 'mode-changed'        // Scale mode toggled
-    | 'gizmo-hover'         // Gizmo handle hovered
-    | 'gizmo-drag-start'    // Gizmo drag started
-    | 'gizmo-drag-end';     // Gizmo drag ended
+    | 'scale-start'
+    | 'scale-preview'
+    | 'scale-commit'
+    | 'scale-cancel'
+    | 'scale-reset'
+    | 'lock-changed'
+    | 'mode-changed'
+    | 'gizmo-hover'
+    | 'gizmo-drag-start'
+    | 'gizmo-drag-end';
 
 /**
  * Scale system event
@@ -530,7 +366,7 @@ export interface ScaleEvent {
 export type ScaleEventListener = (event: ScaleEvent) => void;
 
 // ============================================================================
-// UTILITY TYPES
+// SCALE OPERATION
 // ============================================================================
 
 /**
@@ -554,23 +390,6 @@ export interface ScaleOperationResult {
 }
 
 /**
- * Dimensions of a scalable object
- */
-export interface ObjectDimensions {
-    /** Width in meters (X axis) */
-    width: number;
-
-    /** Height in meters (Y axis) */
-    height: number;
-
-    /** Depth in meters (Z axis) */
-    depth: number;
-
-    /** Bounding sphere radius */
-    boundingRadius: number;
-}
-
-/**
  * Complete scale info for an object
  */
 export interface ObjectScaleInfo {
@@ -584,13 +403,13 @@ export interface ObjectScaleInfo {
     originalScale: number;
 
     /** Current dimensions (after scaling) */
-    currentDimensions: ObjectDimensions;
+    currentDimensions: ModelDimensions;
 
     /** Original dimensions (before any scaling) */
-    originalDimensions: ObjectDimensions;
+    originalDimensions: ModelDimensions;
 
     /** Asset category */
-    category: ScalableAssetCategory;
+    category: AssetCategory;
 
     /** Whether scale is locked */
     isLocked: boolean;
@@ -600,4 +419,87 @@ export interface ObjectScaleInfo {
 
     /** Available presets */
     presets: ScalePreset[];
+}
+
+// ============================================================================
+// UTILITY FUNCTIONS
+// ============================================================================
+
+/**
+ * Apply constraints to a scale value
+ */
+export function applyScaleConstraints(
+    scale: number,
+    constraints: ScaleConstraints,
+    bypassConstraints: boolean = false
+): { scale: number; wasClamped: boolean; wasSnapped: boolean } {
+    let result = scale;
+    let wasClamped = false;
+    let wasSnapped = false;
+
+    // Skip constraints if bypassed
+    if (bypassConstraints && constraints.allowBypass) {
+        return { scale: result, wasClamped, wasSnapped };
+    }
+
+    // Clamp to min/max
+    if (result < constraints.minScale) {
+        result = constraints.minScale;
+        wasClamped = true;
+    } else if (result > constraints.maxScale) {
+        result = constraints.maxScale;
+        wasClamped = true;
+    }
+
+    // Snap to increment
+    if (constraints.snapEnabled && constraints.snapIncrement > 0) {
+        const snapped = Math.round(result / constraints.snapIncrement) * constraints.snapIncrement;
+        if (snapped !== result) {
+            result = snapped;
+            wasSnapped = true;
+        }
+    }
+
+    return { scale: result, wasClamped, wasSnapped };
+}
+
+/**
+ * Get constraints for an asset category
+ */
+export function getConstraintsForCategory(category: AssetCategory): ScaleConstraints {
+    return DEFAULT_SCALE_CONSTRAINTS[category] || DEFAULT_SCALE_CONSTRAINTS.custom;
+}
+
+/**
+ * Get presets for an asset category
+ */
+export function getPresetsForCategory(category: AssetCategory): CategoryPresets {
+    return DEFAULT_CATEGORY_PRESETS[category] || DEFAULT_CATEGORY_PRESETS.custom;
+}
+
+/**
+ * Find a preset by ID within a category
+ */
+export function findPresetById(category: AssetCategory, presetId: string): ScalePreset | undefined {
+    const categoryPresets = getPresetsForCategory(category);
+    return categoryPresets.presets.find(p => p.id === presetId);
+}
+
+/**
+ * Get the default preset for a category
+ */
+export function getDefaultPreset(category: AssetCategory): ScalePreset | undefined {
+    const categoryPresets = getPresetsForCategory(category);
+    return categoryPresets.presets.find(p => p.isDefault) || categoryPresets.presets[0];
+}
+
+/**
+ * Scale dimensions by a factor
+ */
+export function scaleDimensions(dimensions: ModelDimensions, scaleFactor: number): ModelDimensions {
+    return createModelDimensions(
+        dimensions.width * scaleFactor,
+        dimensions.height * scaleFactor,
+        dimensions.depth * scaleFactor
+    );
 }

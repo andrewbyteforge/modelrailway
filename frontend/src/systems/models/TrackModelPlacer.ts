@@ -86,7 +86,7 @@ const FORWARD_AXIS_OFFSETS: Record<ModelForwardAxis, number> = {
  * Default model forward axis
  * Change this if most of your models use a different convention
  */
-const DEFAULT_MODEL_FORWARD: ModelForwardAxis = 'POS_Z';
+const DEFAULT_MODEL_FORWARD: ModelForwardAxis = 'POS_X';
 
 // ============================================================================
 // TYPE DEFINITIONS
@@ -771,6 +771,14 @@ export class TrackModelPlacer {
             // Show instruction message
             this.showMessage('Click on a track piece to place the train. Press ESC to cancel.');
 
+            // ============================================================
+            // NOTIFY OTHER SYSTEMS (InputManager) TO DISABLE THEMSELVES
+            // This prevents InputManager from intercepting clicks meant
+            // for train placement
+            // ============================================================
+            window.dispatchEvent(new CustomEvent('trackPlacementStart'));
+            console.log(`${LOG_PREFIX} Dispatched trackPlacementStart event`);
+
             // Bind event handlers
             this.boundPointerMove = this.onPointerMove.bind(this);
             this.boundPointerDown = this.onPointerDown.bind(this);
@@ -804,6 +812,10 @@ export class TrackModelPlacer {
      * End placement mode
      * @param result - Placement result or null if cancelled
      */
+    /**
+ * End placement mode
+ * @param result - Placement result or null if cancelled
+ */
     private endPlacement(result: TrackPlacementResult | null): void {
         try {
             console.log(`${LOG_PREFIX} Ending placement mode...`);
@@ -832,6 +844,14 @@ export class TrackModelPlacer {
 
             // Hide message
             this.hideMessage();
+
+            // ============================================================
+            // NOTIFY OTHER SYSTEMS (InputManager) TO RE-ENABLE THEMSELVES
+            // This allows InputManager to resume normal track selection
+            // after placement is complete or cancelled
+            // ============================================================
+            window.dispatchEvent(new CustomEvent('trackPlacementEnd'));
+            console.log(`${LOG_PREFIX} Dispatched trackPlacementEnd event`);
 
             // Call callback
             const callback = this.placementCallback;
