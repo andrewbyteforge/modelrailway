@@ -204,7 +204,7 @@ export class NodeOperations extends WorldOutlinerCore {
             if (node.parentId) {
                 const parent = this.nodes.get(node.parentId);
                 parent?.removeChildId(nodeId);
-            } else {
+            } else if (this.rootIds) {
                 // Remove from root
                 const rootIndex = this.rootIds.indexOf(nodeId);
                 if (rootIndex !== -1) {
@@ -259,6 +259,11 @@ export class NodeOperations extends WorldOutlinerCore {
      * @returns Array of root nodes
      */
     getRootNodes(): OutlinerNode[] {
+        // Safety guard - rootIds may be undefined during state import
+        if (!this.rootIds || !Array.isArray(this.rootIds)) {
+            console.warn('[NodeOperations] rootIds not initialized, returning empty array');
+            return [];
+        }
         return this.rootIds.map(id => this.nodes.get(id)!).filter(Boolean);
     }
 
@@ -432,7 +437,7 @@ export class NodeOperations extends WorldOutlinerCore {
             if (oldParentId) {
                 const oldParent = this.nodes.get(oldParentId);
                 oldParent?.removeChildId(nodeId);
-            } else {
+            } else if (this.rootIds) {
                 const rootIndex = this.rootIds.indexOf(nodeId);
                 if (rootIndex !== -1) {
                     this.rootIds.splice(rootIndex, 1);
@@ -446,7 +451,7 @@ export class NodeOperations extends WorldOutlinerCore {
                     newParent.addChildId(nodeId, insertIndex);
                     node.setParentId(newParentId);
                 }
-            } else {
+            } else if (this.rootIds) {
                 // Move to root
                 if (insertIndex !== undefined) {
                     this.rootIds.splice(insertIndex, 0, nodeId);
@@ -477,7 +482,7 @@ export class NodeOperations extends WorldOutlinerCore {
     protected recalculateSortOrders(parentId: string | null): void {
         const childIds = parentId
             ? this.nodes.get(parentId)?.childIds ?? []
-            : this.rootIds;
+            : (this.rootIds ?? []);
 
         childIds.forEach((id, index) => {
             const node = this.nodes.get(id);

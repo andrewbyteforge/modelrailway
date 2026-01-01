@@ -56,6 +56,15 @@ import {
 import { SidebarTransformControls } from '../ui/components/SidebarTransformControls';
 
 // ============================================================================
+// PERSISTENCE SYSTEM IMPORTS
+// ============================================================================
+import {
+    PersistenceIntegration,
+    createPersistenceIntegration
+} from './persistence';
+import { FileMenu, createFileMenu } from '../ui/panels/FileMenu';
+
+// ============================================================================
 // APP CLASS
 // ============================================================================
 
@@ -100,6 +109,15 @@ export class App {
     // TRANSFORM CONTROLS PROPERTY
     // ========================================================================
     private transformControls: SidebarTransformControls | null = null;
+
+    // ========================================================================
+    // PERSISTENCE SYSTEM PROPERTIES
+    // ========================================================================
+    /** Persistence integration for save/load functionality */
+    private persistence: PersistenceIntegration | null = null;
+
+    /** File menu UI component */
+    private fileMenu: FileMenu | null = null;
 
     // ========================================================================
     // CONSTRUCTOR
@@ -183,7 +201,7 @@ export class App {
 
             this.connectCameraAndTrainSystems();
 
-            
+
 
             // ================================================================
             // REGISTER TRAIN SYSTEM WITH MESH DETECTOR
@@ -365,6 +383,39 @@ export class App {
                 console.log('[App] ✓ Connected WorldOutliner to ModelImportButton');
             }
 
+            // ================================================================
+            // INITIALIZE PERSISTENCE SYSTEM (Save/Load)
+            // ================================================================
+            console.log('[App] Initializing persistence system...');
+            this.persistence = createPersistenceIntegration(this.scene);
+            this.persistence.configure({
+                project: this.project,
+                trackSystem: this.trackSystem,
+                // trackCatalog is internal to trackSystem, not needed separately
+                worldOutliner: this.worldOutliner ?? undefined,
+                // modelLibrary: this.modelLibrary,  // Add when available
+                // placedItemManager: PlacedItemManager.getInstance()  // Add when available
+            });
+
+            // Enable keyboard shortcuts (Ctrl+S, Ctrl+O, Ctrl+N)
+            this.persistence.setupKeyboardShortcuts();
+
+            // Enable "unsaved changes" warning when closing browser/app
+            this.persistence.setupBeforeUnloadWarning();
+
+            // Create and mount the File menu button
+            this.fileMenu = createFileMenu(this.persistence.getLayoutManager());
+            this.fileMenu.mount(document.body);
+
+            // Optional: Log status messages
+            this.fileMenu.setStatusCallback((message) => {
+                console.log('[File]', message);
+            });
+
+            console.log('[App] ✓ Persistence system initialized');
+            console.log('[App]   File menu added (top-left corner)');
+            console.log('[App]   Keyboard shortcuts: Ctrl+S (Save), Ctrl+O (Open), Ctrl+N (New)');
+
             // Setup keyboard shortcuts
             this.setupKeyboardShortcuts();
 
@@ -372,7 +423,7 @@ export class App {
             this.setupPointerEvents();
 
             // Place test tracks to verify rendering
-            this.placeTestTracks();
+            // this.placeTestTracks();
 
             console.log('[App] ✓ Initialization complete');
             console.log('');
@@ -408,6 +459,13 @@ export class App {
             console.log('  Imported models appear in World Outliner');
             console.log('  Delete from outliner removes 3D model');
             console.log('  [ / ] → Rotate models too');
+            console.log('');
+            console.log('=== Save/Load (File Menu) ===');
+            console.log('  Ctrl+S → Save layout');
+            console.log('  Ctrl+Shift+S → Save As...');
+            console.log('  Ctrl+O → Open layout');
+            console.log('  Ctrl+N → New layout');
+            console.log('  📄 File button (top-left) → File menu');
             console.log('================');
             console.log('');
             console.log('Connection indicators:');
@@ -1158,22 +1216,63 @@ export class App {
 
     /**
      * Cancel placement mode and re-enable selection
+     * 
+     * IMPORTANT: InputManager.setPlacementMode(false) MUST be called
+     * to re-enable track selection. Any errors from other systems
+     * should not prevent this.
      */
     private cancelPlacementMode(): void {
-        this.placementMode = null;
+        try {
+            this.placementMode = null;
 
-        if (this.uiManager) {
-            this.uiManager.clearSelection();
-        }
-        if (this.inputManager) {
-            this.inputManager.clearSelection();
-            this.inputManager.setPlacementMode(false);
-        }
-        if (this.trackSystem) {
-            this.trackSystem.hideSnapPreview();
-        }
+            // ================================================================
+            // CRITICAL: Reset InputManager placement mode FIRST
+            // This re-enables track piece selection/hovering
+            // Must be done before any potentially-failing calls
+            // ================================================================
+            if (this.inputManager) {
+                this.inputManager.clearSelection();
+                this.inputManager.setPlacementMode(false);
+                console.log('[App] InputManager placement mode disabled');
+            }
 
-        console.log('[App] Placement mode cancelled');
+            // ================================================================
+            // Clear UI selection state
+            // UIManager uses deselectTrack(), not clearSelection()
+            // ================================================================
+            if (this.uiManager) {
+                try {
+                    // Try deselectTrack which is the actual method name
+                    if (typeof (this.uiManager as any).deselectTrack === 'function') {
+                        (this.uiManager as any).deselectTrack();
+                    }
+                } catch (uiError) {
+                    console.warn('[App] Could not clear UI selection:', uiError);
+                }
+            }
+
+            // ================================================================
+            // Hide snap preview indicator
+            // ================================================================
+            if (this.trackSystem) {
+                this.trackSystem.hideSnapPreview();
+            }
+
+            console.log('[App] Placement mode cancelled');
+        } catch (error) {
+            console.error('[App] Error in cancelPlacementMode:', error);
+
+            // ================================================================
+            // FAILSAFE: Even if something fails, ensure InputManager is reset
+            // ================================================================
+            if (this.inputManager) {
+                try {
+                    this.inputManager.setPlacementMode(false);
+                } catch (e) {
+                    console.error('[App] Critical: Could not reset InputManager:', e);
+                }
+            }
+        }
     }
 
     /**
@@ -1325,6 +1424,9 @@ export class App {
 
                     // Register with World Outliner
                     this.registerTrackWithOutliner(piece);
+
+                    // Mark layout as having unsaved changes
+                    this.persistence?.markDirty();
                 } else {
                     console.warn('[App] Failed to place piece');
                 }
@@ -1358,6 +1460,9 @@ export class App {
 
                         // Register with World Outliner
                         this.registerTrackWithOutliner(piece);
+
+                        // Mark layout as having unsaved changes
+                        this.persistence?.markDirty();
                     }
                 }
             }
@@ -1525,7 +1630,7 @@ export class App {
                                     console.log(`[App] ✓ Registered ${count} train(s). Click to select, use controls to move.`);
                                 }
                             } else if (!shiftKey) {
-                                this.placeTestTracks();
+                                // this.placeTestTracks();
                             }
                             break;
 
@@ -1627,6 +1732,9 @@ export class App {
                             // Clear selection
                             this.inputManager.clearSelection();
                             console.log(`[App] ✓ Deleted ${selected.id}`);
+
+                            // Mark layout as having unsaved changes
+                            this.persistence?.markDirty();
                         } else {
                             console.warn(`[App] Failed to delete ${selected.id}`);
                         }
@@ -1757,6 +1865,18 @@ export class App {
             // Dispose World Outliner
             if (this.rightSidebar) this.rightSidebar.dispose();
             if (this.worldOutliner) this.worldOutliner.dispose();
+
+            // ================================================================
+            // DISPOSE PERSISTENCE SYSTEM
+            // ================================================================
+            if (this.fileMenu) {
+                this.fileMenu.dispose();
+                this.fileMenu = null;
+            }
+            if (this.persistence) {
+                this.persistence.dispose();
+                this.persistence = null;
+            }
 
             if (this.uiManager) this.uiManager.dispose();
             if (this.inputManager) this.inputManager.dispose();
