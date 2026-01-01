@@ -73,19 +73,24 @@ const LOG_PREFIX = '[ScaleManager]';
 // ============================================================================
 
 /**
- * Additive step sizes for scale adjustments
+ * Multiplicative scale factors for precise percentage control
  * 
- * These are ADDED/SUBTRACTED from the current scale, not multiplied.
+ * These MULTIPLY the current scale, ensuring the same visual change
+ * regardless of current scale value.
  * 
- * Normal: 1.0 → 1.25 → 1.50 → 1.75 → 2.00 (adding 0.25 each time)
- * Fine:   1.0 → 1.05 → 1.10 → 1.15 → 1.20 (adding 0.05 each time)
+ * Normal: ~1% change per scroll notch
+ * Fine:   ~0.1% change per scroll notch (for hitting exact percentages)
+ * 
+ * Example at 12%:
+ *   Normal: 12.0% → 12.12% → 12.24% → 12.36% (×1.01 each)
+ *   Fine:   12.0% → 12.012% → 12.024% (×1.001 each)
  */
-const ADDITIVE_SCALE_STEPS = {
-    /** Normal scroll step: +/- 0.25 (25%) */
-    NORMAL: 0.25,
+const MULTIPLICATIVE_SCALE_FACTORS = {
+    /** Normal scroll: ×1.01 up, ×(1/1.01) down = ~1% change */
+    NORMAL: 1.01,
 
-    /** Fine scroll step (with Shift): +/- 0.05 (5%) */
-    FINE: 0.05,
+    /** Fine scroll (with Shift): ×1.001 up, ×(1/1.001) down = ~0.1% change */
+    FINE: 1.001,
 } as const;
 
 // ============================================================================
@@ -223,7 +228,7 @@ export class ScaleManager {
         // Create gizmo (not initialized yet)
         this.gizmo = new ScaleGizmo(scene);
 
-        console.log(`${LOG_PREFIX} Created with additive steps: ±${ADDITIVE_SCALE_STEPS.NORMAL} normal, ±${ADDITIVE_SCALE_STEPS.FINE} fine`);
+        console.log(`${LOG_PREFIX} Created with multiplicative factors: ×${MULTIPLICATIVE_SCALE_FACTORS.NORMAL} normal, ×${MULTIPLICATIVE_SCALE_FACTORS.FINE} fine`);
     }
 
     // ========================================================================
@@ -277,15 +282,15 @@ export class ScaleManager {
         console.log('║                    SCALE CONTROLS                          ║');
         console.log('╠════════════════════════════════════════════════════════════╣');
         console.log(`║  Scale range: ${GLOBAL_SCALE_LIMITS.MIN_PERCENT}% - ${GLOBAL_SCALE_LIMITS.MAX_PERCENT}%                                  ║`);
-        console.log(`║  Hold 'S' + Scroll → Scale ±${ADDITIVE_SCALE_STEPS.NORMAL} per notch                 ║`);
-        console.log(`║  + Shift           → Fine scale ±${ADDITIVE_SCALE_STEPS.FINE} per notch             ║`);
+        console.log(`║  Hold 'S' + Scroll → Scale ×${MULTIPLICATIVE_SCALE_FACTORS.NORMAL} per notch (~1%)         ║`);
+        console.log(`║  + Shift           → Fine scale ×${MULTIPLICATIVE_SCALE_FACTORS.FINE} per notch (~0.1%)   ║`);
         console.log(`║  'R'               → Reset to original scale                ║`);
         console.log(`║  'L'               → Toggle scale lock                       ║`);
         console.log('║  Drag gizmo        → Interactive scaling                   ║');
         console.log('╚════════════════════════════════════════════════════════════╝');
         console.log('');
-        console.log(`${LOG_PREFIX} Example: 1.0 → 1.25 → 1.50 → 1.75 → 2.00 (scroll up)`);
-        console.log(`${LOG_PREFIX} Example: 1.0 → 0.75 → 0.50 → 0.25 (scroll down)`);
+        console.log(`${LOG_PREFIX} Example: 12% → 12.12% → 12.24% → 12.36% (scroll up, ×1.01)`);
+        console.log(`${LOG_PREFIX} Fine:    12% → 12.01% → 12.02% → 12.03% (Shift+scroll, ×1.001)`);
         console.log('');
     }
 
@@ -454,15 +459,17 @@ export class ScaleManager {
     }
 
     // ========================================================================
-    // WHEEL EVENTS (SCROLL-TO-SCALE WITH ADDITIVE 0.25 INCREMENTS)
+    // WHEEL EVENTS (SCROLL-TO-SCALE WITH FINE MULTIPLICATIVE FACTORS)
     // ========================================================================
 
     /**
      * Setup wheel event handling for scroll-to-scale
      * 
-     * Uses ADDITIVE increments:
-     * - Normal: S + Scroll → +/- 0.25 per notch (1.0 → 1.25 → 1.50)
-     * - Fine:   S + Shift + Scroll → +/- 0.05 per notch (1.0 → 1.05 → 1.10)
+     * Uses MULTIPLICATIVE factors for precise percentage control:
+     * - Normal: S + Scroll → ×1.01 or ÷1.01 per notch (~1% change)
+     * - Fine:   S + Shift + Scroll → ×1.001 or ÷1.001 per notch (~0.1% change)
+     * 
+     * This allows hitting exact percentages like 12%, 13%, 14%, etc.
      */
     private setupWheelEvents(): void {
         const canvas = this.scene.getEngine().getRenderingCanvas();
@@ -486,25 +493,30 @@ export class ScaleManager {
             if (!registered || registered.scalable.scaleLocked) return;
 
             // ----------------------------------------------------------------
-            // ADDITIVE SCALE CALCULATION
-            // This ADDS or SUBTRACTS a fixed amount, not multiplies!
+            // MULTIPLICATIVE SCALE CALCULATION
+            // This MULTIPLIES or DIVIDES by a factor, ensuring consistent
+            // visual change regardless of current scale value.
+            // Scaling up then down returns to the original value.
             // ----------------------------------------------------------------
 
             // Determine scroll direction (-1 for down, +1 for up)
             const direction = Math.sign(-event.deltaY); // Invert for natural scroll
             if (direction === 0) return;
 
-            // Choose step size based on Shift key (fine mode)
-            const step = this.state.shiftHeld
-                ? ADDITIVE_SCALE_STEPS.FINE   // 0.05 with Shift
-                : ADDITIVE_SCALE_STEPS.NORMAL; // 0.25 normal
+            // Choose scale factor based on Shift key (fine mode)
+            const factor = this.state.shiftHeld
+                ? MULTIPLICATIVE_SCALE_FACTORS.FINE   // 1.01 with Shift
+                : MULTIPLICATIVE_SCALE_FACTORS.NORMAL; // 1.05 normal
 
-            // Calculate new scale by ADDING the step
+            // Calculate new scale by MULTIPLYING (up) or DIVIDING (down)
             const currentScale = registered.scalable.currentScale;
-            const newScale = currentScale + (direction * step);
+            const newScale = direction > 0
+                ? currentScale * factor      // Scroll up = multiply
+                : currentScale / factor;     // Scroll down = divide
 
             // Log the calculation for debugging
-            console.log(`${LOG_PREFIX} Scale: ${currentScale.toFixed(2)} ${direction > 0 ? '+' : '-'} ${step} = ${newScale.toFixed(2)}`);
+            const operation = direction > 0 ? `× ${factor}` : `÷ ${factor}`;
+            console.log(`${LOG_PREFIX} Scale: ${currentScale.toFixed(3)} ${operation} = ${newScale.toFixed(3)}`);
 
             // Clamp to global limits
             const clampedScale = this.constraints.clampToGlobalLimits(newScale);
@@ -662,6 +674,84 @@ export class ScaleManager {
      */
     setScale(objectId: string, scale: number): ScaleOperationResult {
         return this.setScaleInternal(objectId, scale, 'api');
+    }
+
+    /**
+     * Multiply scale by a factor (multiplicative scaling)
+     * 
+     * This MULTIPLIES the current scale by the factor.
+     * Use factor > 1 to scale up, factor < 1 to scale down.
+     * 
+     * @param objectId - Object ID
+     * @param factor - Multiplier (e.g., 1.05 for +5%, 0.95 for -5%)
+     * @returns Operation result
+     * 
+     * @example
+     * ```typescript
+     * // Increase scale by 5%
+     * scaleManager.multiplyScale('model_1', 1.05);
+     * 
+     * // Decrease scale by 5%
+     * scaleManager.multiplyScale('model_1', 1/1.05); // or 0.952
+     * ```
+     */
+    multiplyScale(objectId: string, factor: number): ScaleOperationResult {
+        const registered = this.registeredObjects.get(objectId);
+        if (!registered) {
+            console.warn(`${LOG_PREFIX} multiplyScale - Object not registered: ${objectId}`);
+            return { success: false, error: 'Object not registered' };
+        }
+
+        if (registered.scalable.scaleLocked) {
+            console.log(`${LOG_PREFIX} multiplyScale - Scale is locked: ${objectId}`);
+            return { success: false, error: 'Scale is locked' };
+        }
+
+        // Calculate new scale by MULTIPLYING
+        const currentScale = registered.scalable.currentScale;
+        const newScale = currentScale * factor;
+
+        // Clamp to global limits
+        const clampedScale = this.constraints.clampToGlobalLimits(newScale);
+
+        const operation = factor >= 1 ? `× ${factor.toFixed(3)}` : `÷ ${(1 / factor).toFixed(3)}`;
+        console.log(`${LOG_PREFIX} multiplyScale: ${currentScale.toFixed(3)} ${operation} = ${clampedScale.toFixed(3)}`);
+
+        return this.setScaleInternal(objectId, clampedScale, 'hotkey');
+    }
+
+    /**
+     * Adjust scale by a delta amount (additive) - DEPRECATED
+     * 
+     * Prefer multiplyScale() for consistent scaling feel.
+     * This method is kept for backwards compatibility.
+     * 
+     * @param objectId - Object ID
+     * @param delta - Amount to add to current scale (can be negative)
+     * @returns Operation result
+     */
+    adjustScale(objectId: string, delta: number): ScaleOperationResult {
+        const registered = this.registeredObjects.get(objectId);
+        if (!registered) {
+            console.warn(`${LOG_PREFIX} adjustScale - Object not registered: ${objectId}`);
+            return { success: false, error: 'Object not registered' };
+        }
+
+        if (registered.scalable.scaleLocked) {
+            console.log(`${LOG_PREFIX} adjustScale - Scale is locked: ${objectId}`);
+            return { success: false, error: 'Scale is locked' };
+        }
+
+        // Calculate new scale by ADDING delta (not multiplying)
+        const currentScale = registered.scalable.currentScale;
+        const newScale = currentScale + delta;
+
+        // Clamp to global limits
+        const clampedScale = this.constraints.clampToGlobalLimits(newScale);
+
+        console.log(`${LOG_PREFIX} adjustScale: ${currentScale.toFixed(3)} + ${delta} = ${clampedScale.toFixed(3)}`);
+
+        return this.setScaleInternal(objectId, clampedScale, 'hotkey');
     }
 
     /**
@@ -924,12 +1014,12 @@ export class ScaleManager {
     }
 
     /**
-     * Get additive scale step settings
+     * Get multiplicative scale factor settings
      */
-    getScaleSteps(): { normal: number; fine: number } {
+    getScaleFactors(): { normal: number; fine: number } {
         return {
-            normal: ADDITIVE_SCALE_STEPS.NORMAL,
-            fine: ADDITIVE_SCALE_STEPS.FINE
+            normal: MULTIPLICATIVE_SCALE_FACTORS.NORMAL,
+            fine: MULTIPLICATIVE_SCALE_FACTORS.FINE
         };
     }
 

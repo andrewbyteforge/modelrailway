@@ -60,6 +60,11 @@ import { ScaleManager } from '../systems/scaling/ScaleManager';
 import { ScalableModelAdapter } from '../systems/scaling/ScalableModelAdapter';
 import { SidebarScaleControls } from './components/SidebarScaleControls';
 import type { IScalable, ScalableAssetCategory } from '../types/scaling.types';
+import {
+    GaugeScaleCalculator,
+    getGlobalGaugeCalculator,
+    registerGaugeCalculatorConsoleUtils
+} from '../systems/scaling/GaugeScaleCalculator';
 
 // ============================================================================
 // TRAIN DETECTION IMPORT
@@ -70,6 +75,12 @@ import {
     getTrainClickBehavior,
     type TrainClickBehavior
 } from '../systems/train/TrainMeshDetector';
+
+// ============================================================================
+// CAMERA CONTROL HELPER IMPORT
+// ============================================================================
+
+import { setCameraControlsEnabled } from '../utils/CameraControlHelper';
 
 // ============================================================================
 // CONSTANTS
@@ -168,6 +179,9 @@ export class ModelImportButton {
     /** Height offsets for each model (for lifting above baseboard) */
     private modelHeightOffsets: Map<string, number> = new Map();
 
+    /** Gauge calculator for automatic rolling stock scaling */
+    private gaugeCalculator: GaugeScaleCalculator;
+
     // ========================================================================
     // SELECTION/DRAG PROPERTIES
     // ========================================================================
@@ -210,6 +224,9 @@ export class ModelImportButton {
         }
         this.scene = scene;
         this.library = ModelLibrary.getInstance();
+
+        // Initialize gauge calculator for automatic rolling stock scaling
+        this.gaugeCalculator = getGlobalGaugeCalculator();
 
         console.log(`${LOG_PREFIX} Created`);
     }
@@ -268,7 +285,15 @@ export class ModelImportButton {
             // ----------------------------------------------------------------
             // Register orientation test utility (for debugging train orientation)
             // ----------------------------------------------------------------
-            registerOrientationTester(this.scene);
+            if (this.trackPlacer) {
+                registerOrientationTester(this.trackPlacer);
+            }
+
+            // ----------------------------------------------------------------
+            // Register gauge calculator console utilities
+            // ----------------------------------------------------------------
+            registerGaugeCalculatorConsoleUtils();
+            console.log(`${LOG_PREFIX} ✓ Gauge calculator console utils registered`);
 
             // ----------------------------------------------------------------
             // Listen for library changes to update status
@@ -307,19 +332,41 @@ export class ModelImportButton {
         console.log('║  Click model        → Select it                            ║');
         console.log('║  Click train        → Select for DRIVING (TrainSystem)     ║');
         console.log('║  Shift+Click train  → Select for REPOSITIONING             ║');
+        console.log('╠════════════════════════════════════════════════════════════╣');
+        console.log('║  POSITIONING:                                              ║');
         console.log('║  Drag model         → Move it (XZ plane)                   ║');
+        console.log('║  Shift + Drag       → Fine positioning (20% speed)         ║');
+        console.log('║  Ctrl + Drag        → Ultra-fine positioning (5% speed)    ║');
+        console.log('║  Arrow keys         → Nudge ±5mm                           ║');
+        console.log('║  Shift + Arrows     → Fine nudge ±1mm                      ║');
+        console.log('║  Ctrl + Arrows      → Ultra-fine nudge ±0.5mm              ║');
+        console.log('╠════════════════════════════════════════════════════════════╣');
+        console.log('║  SCALING (multiplicative - precise percentage control):    ║');
+        console.log('║  S + Scroll         → Scale ×1.01 / ÷1.01 (~1%)            ║');
+        console.log('║  Shift+S + Scroll   → Fine ×1.001 / ÷1.001 (~0.1%)         ║');
         console.log('║  Drag gizmo corner  → Scale uniformly                      ║');
-        console.log('║  S + Scroll         → Scale selected object                ║');
-        console.log('║  Shift+S + Scroll   → Fine scale adjustment                ║');
-        console.log('║  H + Scroll         → Adjust height (lift/lower)           ║');
-        console.log('║  PageUp / PageDown  → Height ±5mm                          ║');
-        console.log('║  Shift+PgUp/PgDn    → Height ±1mm (fine)                   ║');
         console.log('║  R                  → Reset to original scale              ║');
         console.log('║  L                  → Lock/unlock scaling                  ║');
+        console.log('╠════════════════════════════════════════════════════════════╣');
+        console.log('║  HEIGHT:                                                   ║');
+        console.log('║  H + Scroll         → Adjust height ±5mm                   ║');
+        console.log('║  Shift+H + Scroll   → Fine height ±1mm                     ║');
+        console.log('║  PageUp / PageDown  → Height ±5mm                          ║');
+        console.log('║  Shift+PgUp/PgDn    → Height ±1mm (fine)                   ║');
+        console.log('╠════════════════════════════════════════════════════════════╣');
+        console.log('║  ROTATION:                                                 ║');
         console.log('║  [ / ]              → Rotate ±5°                           ║');
+        console.log('║  Ctrl + [ / ]       → Fine rotate ±1°                      ║');
         console.log('║  Shift + [ / ]      → Rotate ±22.5°                        ║');
+        console.log('╠════════════════════════════════════════════════════════════╣');
         console.log('║  Delete             → Remove selected model                ║');
         console.log('║  Escape             → Deselect                             ║');
+        console.log('╠════════════════════════════════════════════════════════════╣');
+        console.log('║  🚂 ROLLING STOCK: Auto-scaled to OO gauge (16.5mm)        ║');
+        console.log('║     Use S+Scroll to fine-tune after placement              ║');
+        console.log('╠════════════════════════════════════════════════════════════╣');
+        console.log('║  Console: showOOSpecs() → Show OO gauge specifications     ║');
+        console.log('║  Console: calculateOOScale(widthMm) → Calculate scale      ║');
         console.log('╚════════════════════════════════════════════════════════════╝');
         console.log('');
     }
@@ -442,20 +489,62 @@ export class ModelImportButton {
 
             switch (event.key) {
                 // Rotate left
+                // Ctrl = 1°, Normal = 5°, Shift = 22.5°
                 case '[':
                     if (selectedModel && !trackSelected) {
                         event.preventDefault();
-                        const angle = event.shiftKey ? -22.5 : -5;
+                        const angle = event.ctrlKey ? -1 : (event.shiftKey ? -22.5 : -5);
                         this.modelSystem.rotateModel(selectedModel.id, angle);
                     }
                     break;
 
                 // Rotate right
+                // Ctrl = 1°, Normal = 5°, Shift = 22.5°
                 case ']':
                     if (selectedModel && !trackSelected) {
                         event.preventDefault();
-                        const angle = event.shiftKey ? 22.5 : 5;
+                        const angle = event.ctrlKey ? 1 : (event.shiftKey ? 22.5 : 5);
                         this.modelSystem.rotateModel(selectedModel.id, angle);
+                    }
+                    break;
+
+                // ============================================================
+                // ARROW KEY NUDGING - Precise positioning
+                // Normal: 5mm, Shift: 1mm, Ctrl: 0.5mm
+                // ============================================================
+                case 'ArrowUp':
+                    if (selectedModel && !trackSelected) {
+                        event.preventDefault();
+                        const nudge = event.ctrlKey ? 0.0005 : (event.shiftKey ? 0.001 : 0.005);
+                        const pos = selectedModel.position;
+                        this.modelSystem.moveModel(selectedModel.id, new Vector3(pos.x, pos.y, pos.z - nudge));
+                    }
+                    break;
+
+                case 'ArrowDown':
+                    if (selectedModel && !trackSelected) {
+                        event.preventDefault();
+                        const nudge = event.ctrlKey ? 0.0005 : (event.shiftKey ? 0.001 : 0.005);
+                        const pos = selectedModel.position;
+                        this.modelSystem.moveModel(selectedModel.id, new Vector3(pos.x, pos.y, pos.z + nudge));
+                    }
+                    break;
+
+                case 'ArrowLeft':
+                    if (selectedModel && !trackSelected) {
+                        event.preventDefault();
+                        const nudge = event.ctrlKey ? 0.0005 : (event.shiftKey ? 0.001 : 0.005);
+                        const pos = selectedModel.position;
+                        this.modelSystem.moveModel(selectedModel.id, new Vector3(pos.x - nudge, pos.y, pos.z));
+                    }
+                    break;
+
+                case 'ArrowRight':
+                    if (selectedModel && !trackSelected) {
+                        event.preventDefault();
+                        const nudge = event.ctrlKey ? 0.0005 : (event.shiftKey ? 0.001 : 0.005);
+                        const pos = selectedModel.position;
+                        this.modelSystem.moveModel(selectedModel.id, new Vector3(pos.x + nudge, pos.y, pos.z));
                     }
                     break;
 
@@ -537,19 +626,19 @@ export class ModelImportButton {
             const trackSelected = (window as any).__trackPieceSelected === true;
             if (trackSelected) return;
 
-            // S + Scroll = Scale
+            // S + Scroll = Scale (multiplicative ~1% per notch)
             if (event.shiftKey === false && this.isKeyHeld('s')) {
                 event.preventDefault();
-                const delta = event.deltaY < 0 ? 0.05 : -0.05;
-                this.scaleManager?.adjustScale(selectedModel.id, delta);
+                const factor = event.deltaY < 0 ? 1.01 : (1 / 1.01); // ~1% up or down
+                this.scaleManager?.multiplyScale(selectedModel.id, factor);
                 return;
             }
 
-            // Shift + S + Scroll = Fine scale
+            // Shift + S + Scroll = Fine scale (multiplicative ~0.1% per notch)
             if (event.shiftKey && this.isKeyHeld('s')) {
                 event.preventDefault();
-                const delta = event.deltaY < 0 ? 0.01 : -0.01;
-                this.scaleManager?.adjustScale(selectedModel.id, delta);
+                const factor = event.deltaY < 0 ? 1.001 : (1 / 1.001); // ~0.1% up or down
+                this.scaleManager?.multiplyScale(selectedModel.id, factor);
                 return;
             }
 
@@ -788,6 +877,11 @@ export class ModelImportButton {
 
     /**
      * Handle dragging a model
+     * 
+     * Supports fine positioning modes:
+     * - Normal drag: 1:1 movement
+     * - Shift + drag: 20% speed (fine positioning)
+     * - Ctrl + drag: 5% speed (ultra-fine positioning)
      */
     private handleModelDrag(event: PointerEvent): void {
         if (!this.modelSystem || !this.draggedModelId || !this.dragOffset) return;
@@ -799,9 +893,29 @@ export class ModelImportButton {
         const worldPos = this.getWorldPositionFromScreen(event.clientX, event.clientY);
         if (!worldPos) return;
 
-        // Calculate new position (apply offset)
-        const newX = worldPos.x - this.dragOffset.x;
-        const newZ = worldPos.z - this.dragOffset.z;
+        // Calculate raw new position (apply offset)
+        let newX = worldPos.x - this.dragOffset.x;
+        let newZ = worldPos.z - this.dragOffset.z;
+
+        // ================================================================
+        // FINE POSITIONING MODES
+        // ================================================================
+        // Apply drag speed multiplier for precise positioning
+        // - Shift: 20% speed (fine)
+        // - Ctrl: 5% speed (ultra-fine)
+
+        if (event.ctrlKey || event.shiftKey) {
+            // Calculate delta from current position
+            const deltaX = newX - model.position.x;
+            const deltaZ = newZ - model.position.z;
+
+            // Apply speed multiplier
+            const speedMultiplier = event.ctrlKey ? 0.05 : 0.20;
+
+            // Apply reduced delta
+            newX = model.position.x + (deltaX * speedMultiplier);
+            newZ = model.position.z + (deltaZ * speedMultiplier);
+        }
 
         // Move the model (keep same Y - preserves correct placement height)
         this.modelSystem.moveModel(this.draggedModelId, new Vector3(newX, model.position.y, newZ));
@@ -970,25 +1084,20 @@ export class ModelImportButton {
 
     /**
      * Disable camera controls during drag
+     * Uses centralized helper to prevent conflicts with other systems
+     * (InputManager, ScaleGizmo, TrainSystem all coordinate through the helper)
      */
     private disableCameraControls(): void {
-        const camera = this.scene.activeCamera as any;
-        if (camera) {
-            if (camera.inputs?.attached?.pointers) {
-                camera.inputs.attached.pointers.detachControl();
-            }
-            camera.attachControl(this.scene.getEngine().getRenderingCanvas(), false);
-        }
+        setCameraControlsEnabled(this.scene, false, undefined, 'ModelDrag');
     }
 
     /**
      * Enable camera controls after drag
+     * Uses centralized helper to prevent conflicts with other systems
      */
     private enableCameraControls(): void {
-        const camera = this.scene.activeCamera as any;
-        if (camera) {
-            camera.attachControl(this.scene.getEngine().getRenderingCanvas(), true);
-        }
+        const canvas = this.scene.getEngine().getRenderingCanvas();
+        setCameraControlsEnabled(this.scene, true, canvas, 'ModelDrag');
     }
 
     // ========================================================================
@@ -1182,6 +1291,8 @@ export class ModelImportButton {
      * Register a placed model with the scaling system
      * Creates a ScalableModelAdapter and registers with ScaleManager
      * 
+     * For rolling stock, automatically calculates and applies gauge-correct scaling
+     * 
      * @param placedModel - The placed model from ModelSystem
      * @param category - Model category for scale constraints
      */
@@ -1195,23 +1306,236 @@ export class ModelImportButton {
             // Map category to scalable asset category
             const assetCategory = CATEGORY_MAP[category] || 'other';
 
-            // Create adapter for the model
+            // Create adapter for the model with correct constructor parameters
+            // ScalableModelAdapter expects (placedModel, modelCategory)
             const adapter = new ScalableModelAdapter(
-                placedModel.id,
-                placedModel.rootNode,
-                assetCategory as ScalableAssetCategory
+                placedModel,
+                category as ModelCategory
             );
 
             // Store adapter reference
             this.scalableAdapters.set(placedModel.id, adapter);
 
-            // Register with scale manager
-            this.scaleManager.registerScalable(adapter);
+            // Calculate bounding radius from meshes for gizmo sizing
+            const boundingRadius = this.calculateBoundingRadius(placedModel.meshes);
 
-            console.log(`${LOG_PREFIX} ✓ Registered for scaling: ${placedModel.id} (${assetCategory})`);
+            // Register with scale manager - requires all 4 parameters:
+            // (scalable, transformNode, meshes, boundingRadius)
+            this.scaleManager.registerScalable(
+                adapter,
+                placedModel.rootNode,
+                placedModel.meshes,
+                boundingRadius
+            );
+
+            console.log(`${LOG_PREFIX} ✓ Registered for scaling: ${placedModel.id} (${assetCategory}, radius: ${boundingRadius.toFixed(2)})`);
+
+            // ================================================================
+            // AUTO GAUGE SCALING FOR ROLLING STOCK
+            // ================================================================
+            // Automatically calculate and apply correct scale for rolling stock
+            // so all trains/coaches/wagons fit the OO gauge track correctly
+
+            const isRollingStock = this.isRollingStockCategory(category);
+
+            if (isRollingStock) {
+                this.applyAutoGaugeScale(placedModel, adapter);
+            }
 
         } catch (error) {
             console.error(`${LOG_PREFIX} Failed to register for scaling:`, error);
+        }
+    }
+
+    /**
+     * Check if a category is rolling stock (needs gauge scaling)
+     * 
+     * @param category - Model category string
+     * @returns True if this is rolling stock
+     */
+    private isRollingStockCategory(category: string): boolean {
+        const rollingStockCategories = [
+            'rolling_stock',
+            'locomotive',
+            'coach',
+            'wagon',
+            'carriage',
+            'multiple_unit',
+            'dmu',
+            'emu'
+        ];
+        return rollingStockCategories.includes(category.toLowerCase());
+    }
+
+    /**
+     * Apply automatic gauge-based scaling to rolling stock
+     * 
+     * Analyzes the model geometry and calculates the correct scale factor
+     * to make it fit OO gauge track properly.
+     * 
+     * @param placedModel - The placed model
+     * @param adapter - The scalable adapter for the model
+     */
+    private applyAutoGaugeScale(placedModel: PlacedModel, adapter: ScalableModelAdapter): void {
+        try {
+            console.log(`${LOG_PREFIX} 🚂 Auto gauge scaling for: ${placedModel.id}`);
+
+            // Analyze the model and calculate correct scale
+            const analysis = this.gaugeCalculator.analyzeAndCalculateScale(
+                placedModel.meshes,
+                placedModel.rootNode
+            );
+
+            if (!analysis.success) {
+                console.warn(`${LOG_PREFIX} Gauge analysis failed: ${analysis.explanation}`);
+                console.warn(`${LOG_PREFIX} Using default scale (1.0)`);
+                return;
+            }
+
+            // Log the analysis results
+            console.log(`${LOG_PREFIX} Gauge Analysis Results:`);
+            console.log(`${LOG_PREFIX}   Measured width: ${(analysis.measuredWidthM * 1000).toFixed(2)}mm`);
+            console.log(`${LOG_PREFIX}   Target width: ${(analysis.targetWidthM * 1000).toFixed(2)}mm`);
+            console.log(`${LOG_PREFIX}   Scale factor: ${(analysis.scaleFactor * 100).toFixed(1)}% (${analysis.scaleFactor.toFixed(4)})`);
+            console.log(`${LOG_PREFIX}   Confidence: ${(analysis.confidence * 100).toFixed(0)}%`);
+            console.log(`${LOG_PREFIX}   Type: ${analysis.details.estimatedType}`);
+
+            if (analysis.warnings.length > 0) {
+                console.warn(`${LOG_PREFIX}   Warnings:`, analysis.warnings);
+            }
+
+            // Apply the calculated scale
+            if (this.scaleManager && analysis.scaleFactor !== 1.0) {
+                const result = this.scaleManager.setScale(placedModel.id, analysis.scaleFactor);
+
+                if (result.success) {
+                    console.log(`${LOG_PREFIX} ✓ Auto gauge scale applied: ${(analysis.scaleFactor * 100).toFixed(1)}%`);
+
+                    // Show user feedback
+                    this.showScaleNotification(
+                        placedModel.id,
+                        analysis.scaleFactor,
+                        analysis.confidence,
+                        analysis.details.estimatedType
+                    );
+                } else {
+                    console.error(`${LOG_PREFIX} Failed to apply gauge scale:`, result.error);
+                }
+            }
+
+        } catch (error) {
+            console.error(`${LOG_PREFIX} Error in auto gauge scaling:`, error);
+        }
+    }
+
+    /**
+     * Show a brief notification about the auto-applied scale
+     * 
+     * @param modelId - ID of the scaled model
+     * @param scaleFactor - Applied scale factor
+     * @param confidence - Confidence of the calculation
+     * @param modelType - Detected model type
+     */
+    private showScaleNotification(
+        modelId: string,
+        scaleFactor: number,
+        confidence: number,
+        modelType: string
+    ): void {
+        try {
+            // Create notification element
+            const notification = document.createElement('div');
+            notification.id = 'gaugeScaleNotification';
+            notification.style.cssText = `
+                position: fixed;
+                bottom: 80px;
+                left: 50%;
+                transform: translateX(-50%);
+                background: rgba(0, 100, 0, 0.9);
+                color: white;
+                padding: 12px 20px;
+                border-radius: 8px;
+                font-family: 'Segoe UI', Arial, sans-serif;
+                font-size: 14px;
+                z-index: 10000;
+                pointer-events: none;
+                box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+                border: 1px solid rgba(255, 255, 255, 0.2);
+                transition: opacity 0.3s ease;
+            `;
+
+            const scalePercent = (scaleFactor * 100).toFixed(1);
+            const confPercent = (confidence * 100).toFixed(0);
+
+            notification.innerHTML = `
+                <div style="display: flex; align-items: center; gap: 10px;">
+                    <span style="font-size: 20px;">🚂</span>
+                    <div>
+                        <div style="font-weight: bold;">Auto-scaled to ${scalePercent}%</div>
+                        <div style="font-size: 12px; opacity: 0.8;">
+                            ${modelType} • ${confPercent}% confidence • Use S+Scroll to adjust
+                        </div>
+                    </div>
+                </div>
+            `;
+
+            document.body.appendChild(notification);
+
+            // Fade out and remove after 4 seconds
+            setTimeout(() => {
+                notification.style.opacity = '0';
+                setTimeout(() => {
+                    if (notification.parentNode) {
+                        notification.parentNode.removeChild(notification);
+                    }
+                }, 300);
+            }, 4000);
+
+        } catch (error) {
+            console.warn(`${LOG_PREFIX} Could not show scale notification:`, error);
+        }
+    }
+
+    /**
+     * Calculate bounding radius from an array of meshes
+     * Used for scale gizmo sizing
+     * 
+     * @param meshes - Array of meshes to calculate bounds from
+     * @returns Bounding radius (half of largest dimension)
+     */
+    private calculateBoundingRadius(meshes: AbstractMesh[]): number {
+        if (!meshes || meshes.length === 0) {
+            return 1.0; // Default fallback
+        }
+
+        try {
+            let minX = Infinity, minY = Infinity, minZ = Infinity;
+            let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
+
+            for (const mesh of meshes) {
+                if (mesh.getBoundingInfo) {
+                    const bounds = mesh.getBoundingInfo().boundingBox;
+                    minX = Math.min(minX, bounds.minimumWorld.x);
+                    minY = Math.min(minY, bounds.minimumWorld.y);
+                    minZ = Math.min(minZ, bounds.minimumWorld.z);
+                    maxX = Math.max(maxX, bounds.maximumWorld.x);
+                    maxY = Math.max(maxY, bounds.maximumWorld.y);
+                    maxZ = Math.max(maxZ, bounds.maximumWorld.z);
+                }
+            }
+
+            // Calculate dimensions
+            const width = maxX - minX;
+            const height = maxY - minY;
+            const depth = maxZ - minZ;
+
+            // Return half of the largest dimension as radius
+            const maxDimension = Math.max(width, height, depth);
+            return Math.max(maxDimension / 2, 0.1); // Minimum 0.1
+
+        } catch (error) {
+            console.warn(`${LOG_PREFIX} Error calculating bounding radius:`, error);
+            return 1.0; // Fallback
         }
     }
 

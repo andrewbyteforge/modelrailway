@@ -12,7 +12,7 @@
  * 
  * @module ScaleGizmo
  * @author Model Railway Workbench
- * @version 1.0.0
+ * @version 1.1.0 - Updated to use centralized camera control helper
  */
 
 import { Scene } from '@babylonjs/core/scene';
@@ -40,6 +40,9 @@ import {
     calculateAutoScaleGizmoSize,
     calculateHandleOffset
 } from '../../utils/scaling/ScaleCalculations';
+
+// Import centralized camera control helper
+import { setCameraControlsEnabled } from '../../utils/CameraControlHelper';
 
 // ============================================================================
 // CONSTANTS
@@ -584,8 +587,8 @@ export class ScaleGizmo {
         handle.mesh.material = this.materials.active;
         this.state = 'dragging';
 
-        // Disable camera controls during drag
-        this.setCameraControlsEnabled(false);
+        // Disable camera controls during drag (uses centralized helper)
+        setCameraControlsEnabled(this.scene, false);
 
         // Emit event
         this.emit({
@@ -650,8 +653,8 @@ export class ScaleGizmo {
             handle.isHovered = false;
         }
 
-        // Re-enable camera controls
-        this.setCameraControlsEnabled(true);
+        // Re-enable camera controls (uses centralized helper - preserves button config)
+        setCameraControlsEnabled(this.scene, true);
 
         // Reset cursor
         if (this.scene.getEngine().getRenderingCanvas()) {
@@ -704,8 +707,8 @@ export class ScaleGizmo {
             handle.isHovered = false;
         }
 
-        // Re-enable camera controls
-        this.setCameraControlsEnabled(true);
+        // Re-enable camera controls (uses centralized helper - preserves button config)
+        setCameraControlsEnabled(this.scene, true);
 
         // Emit cancel event
         this.emit({
@@ -726,22 +729,6 @@ export class ScaleGizmo {
         this.state = 'idle';
 
         console.log(`${LOG_PREFIX} Cancelled drag`);
-    }
-
-    /**
-     * Enable/disable camera controls
-     */
-    private setCameraControlsEnabled(enabled: boolean): void {
-        const camera = this.scene.activeCamera;
-        const canvas = this.scene.getEngine().getRenderingCanvas();
-
-        if (camera && canvas) {
-            if (enabled) {
-                camera.attachControl(canvas, true);
-            } else {
-                camera.detachControl();
-            }
-        }
     }
 
     // ========================================================================

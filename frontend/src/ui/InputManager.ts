@@ -14,7 +14,7 @@
  * 
  * @module InputManager
  * @author Model Railway Workbench
- * @version 1.1.0
+ * @version 1.2.0 - Updated to use centralized camera control helper
  */
 
 import { Scene } from '@babylonjs/core/scene';
@@ -26,6 +26,9 @@ import type { StandardMaterial } from '@babylonjs/core/Materials/standardMateria
 import type { TrackSystem } from '../systems/track/TrackSystem';
 import type { TrackPiece } from '../systems/track/TrackPiece';
 import type { BaseboardSystem } from '../systems/baseboard/BaseboardSystem';
+
+// Import centralized camera control helper
+import { setCameraControlsEnabled } from '../utils/CameraControlHelper';
 
 // ============================================================================
 // TYPES
@@ -439,8 +442,8 @@ export class InputManager {
             this.dragOffset = null;
         }
 
-        // Disable camera controls during drag
-        this.setCameraControlsEnabled(false);
+        // Disable camera controls during drag (uses centralized helper)
+        setCameraControlsEnabled(this.scene, false, undefined, 'TrackDrag');
 
         this.canvas.style.cursor = 'grabbing';
         console.log(`[InputManager] Started dragging ${piece.id}`);
@@ -459,28 +462,10 @@ export class InputManager {
         this.dragStartPos = null;
         this.dragOffset = null;
 
-        // Re-enable camera controls
-        this.setCameraControlsEnabled(true);
+        // Re-enable camera controls (uses centralized helper - preserves button config)
+        setCameraControlsEnabled(this.scene, true, this.canvas, 'TrackDrag');
 
         this.canvas.style.cursor = this.hoveredPiece ? 'pointer' : 'default';
-    }
-
-    /**
-     * Enable or disable camera controls
-     */
-    private setCameraControlsEnabled(enabled: boolean): void {
-        try {
-            const camera = this.scene.activeCamera;
-            if (!camera) return;
-
-            if (enabled) {
-                camera.attachControl(this.canvas, true);
-            } else {
-                camera.detachControl();
-            }
-        } catch (error) {
-            console.error('[InputManager] Error toggling camera controls:', error);
-        }
     }
 
     /**

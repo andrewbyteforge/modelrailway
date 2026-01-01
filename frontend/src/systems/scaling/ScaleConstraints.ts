@@ -1,25 +1,23 @@
 /**
- * ScaleConstraints.ts - Scale validation, clamping, and snapping utilities
+ * ScaleConstraints.ts - Scale validation and clamping utilities
  * 
  * Path: frontend/src/systems/scaling/ScaleConstraints.ts
  * 
  * Provides constraint enforcement for scaling operations:
  * - Min/max clamping (0.25% to 100%)
- * - Snap-to-increment
+ * - Category-specific limits
  * - Bypass mode handling
- * - Category-specific defaults
+ * 
+ * NOTE: Snapping is DISABLED to allow precise percentage control.
+ * You can type 13% and get exactly 13%, not snapped to 15%.
  * 
  * SCALE RANGE: 0.25% to 100%
  * - MIN_SCALE = 0.0025 (0.25%)
  * - MAX_SCALE = 1.0 (100%)
  * 
- * SCALE INCREMENTS: 25% per scroll (v2.1.0)
- * - Normal scroll: 25% change
- * - Fine scroll (Shift): 5% change
- * 
  * @module ScaleConstraints
  * @author Model Railway Workbench
- * @version 2.1.0 - Updated to 25% increments per scroll
+ * @version 2.2.0 - Disabled snapping for precise control
  */
 
 import {
@@ -140,7 +138,7 @@ export class ScaleConstraintsHandler {
     constructor() {
         console.log(`${LOG_PREFIX} Created`);
         console.log(`${LOG_PREFIX} Scale range: ${GLOBAL_SCALE_LIMITS.MIN_PERCENT}% - ${GLOBAL_SCALE_LIMITS.MAX_PERCENT}%`);
-        console.log(`${LOG_PREFIX} Normal step: ${SCALE_STEP_CONFIG.NORMAL_STEP * 100}% | Fine step: ${SCALE_STEP_CONFIG.FINE_STEP * 100}%`);
+        console.log(`${LOG_PREFIX} Snapping: DISABLED (allows precise percentage control)`);
     }
 
     // ========================================================================
@@ -172,15 +170,21 @@ export class ScaleConstraintsHandler {
             let wasSnapped = false;
 
             // ----------------------------------------------------------------
-            // STEP 1: Apply snapping (if enabled and not bypassed)
+            // STEP 1: Snapping DISABLED for precise percentage control
             // ----------------------------------------------------------------
-            if (constraints.snapEnabled && !this.bypassActive && constraints.snapIncrement > 0) {
-                const snappedScale = this.snapToIncrement(inputScale, constraints.snapIncrement);
-                if (Math.abs(snappedScale - inputScale) > EPSILON) {
-                    finalScale = snappedScale;
-                    wasSnapped = true;
-                }
-            }
+            // Snapping was causing values like 13% to jump to 15%
+            // Users need fine control over exact percentages
+            // Snapping can be re-enabled per-category if needed via:
+            //   constraints.setCustomConstraints(category, { snapEnabled: true, snapIncrement: 0.05 })
+
+            // DISABLED: Snapping logic
+            // if (constraints.snapEnabled && !this.bypassActive && constraints.snapIncrement > 0) {
+            //     const snappedScale = this.snapToIncrement(inputScale, constraints.snapIncrement);
+            //     if (Math.abs(snappedScale - inputScale) > EPSILON) {
+            //         finalScale = snappedScale;
+            //         wasSnapped = true;
+            //     }
+            // }
 
             // ----------------------------------------------------------------
             // STEP 2: Apply GLOBAL min/max clamping (0.25% - 100%)
