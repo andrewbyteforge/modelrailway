@@ -5,17 +5,22 @@
  * 
  * This system handles the placement of rolling stock models onto track:
  * - Detects track pieces in the scene
- * - Calculates positions along track centerlines
- * - Snaps models to track with correct orientation
+ * - Uses TrackGraph for accurate position and direction calculation
+ * - Snaps models to track with correct orientation facing along track direction
  * - Provides visual feedback during placement
  * 
- * IMPORTANT: Train models are expected to face along positive X-axis
- * in their local coordinate system. If your model faces a different
- * direction, adjust MODEL_FORWARD_AXIS accordingly.
+ * UPDATED: Now integrates with TrackGraph for accurate track direction
+ * - Trains now face the same direction as the track edge (fromNode → toNode)
+ * - Falls back to mesh-based calculation if graph not available
+ * 
+ * Model Forward Axis:
+ * - Models are expected to face along positive Z-axis by default
+ * - If your model faces a different direction, use setModelForwardAxis()
+ * - Console utility: window.setTrainOrientation('NEG_Y') etc.
  * 
  * @module TrackModelPlacer
  * @author Model Railway Workbench
- * @version 1.1.0
+ * @version 2.0.0 - TrackGraph integration for correct orientation
  */
 
 import { Scene } from '@babylonjs/core/scene';
@@ -27,6 +32,7 @@ import { StandardMaterial } from '@babylonjs/core/Materials/standardMaterial';
 import type { Mesh } from '@babylonjs/core/Meshes/mesh';
 import type { AbstractMesh } from '@babylonjs/core/Meshes/abstractMesh';
 import type { PickingInfo } from '@babylonjs/core/Collisions/pickingInfo';
+import type { TrackGraph, GraphEdge, GraphNode, CurveDefinition } from '../track/TrackGraph';
 
 // ============================================================================
 // CONSTANTS
@@ -51,6 +57,8 @@ const SNAP_CONFIG = {
     MAX_DISTANCE_M: 0.05,
     /** Search radius for finding track meshes */
     SEARCH_RADIUS_M: 0.1,
+    /** Number of samples along edge for finding closest point */
+    SAMPLES_PER_EDGE: 20,
 } as const;
 
 /**
@@ -67,60 +75,68 @@ const SNAP_CONFIG = {
  * 
  * If your train faces sideways on the track, try a different axis.
  */
-type ModelForwardAxis = 'POS_X' | 'NEG_X' | 'POS_Y' | 'NEG_Y' | 'POS_Z' | 'NEG_Z';
+export type ModelForwardAxis = 'POS_X' | 'NEG_X' | 'POS_Y' | 'NEG_Y' | 'POS_Z' | 'NEG_Z';
 
 /**
- * Rotation offset in radians for each forward axis convention
- * These offsets rotate FROM the model's local forward TO the world forward (along track)
+ * Rotation offsets for each forward axis convention
+ * These are added to the track angle to align the model correctly
  */
 const FORWARD_AXIS_OFFSETS: Record<ModelForwardAxis, number> = {
-    'POS_X': 0,                    // Model faces +X → no rotation needed
-    'NEG_X': Math.PI,              // Model faces -X → rotate 180°
-    'POS_Y': -Math.PI / 2,         // Model faces +Y → rotate -90°
-    'NEG_Y': Math.PI / 2,          // Model faces -Y → rotate +90°
-    'POS_Z': -Math.PI / 2,         // Model faces +Z → rotate -90°
-    'NEG_Z': Math.PI / 2,          // Model faces -Z → rotate +90°
+    'POS_Z': 0,                    // Model faces +Z, no offset needed
+    'NEG_Z': Math.PI,              // Model faces -Z, rotate 180°
+    'POS_X': -Math.PI / 2,         // Model faces +X, rotate -90°
+    'NEG_X': Math.PI / 2,          // Model faces -X, rotate +90°
+    'POS_Y': 0,                    // Y-forward (unusual), treat as Z
+    'NEG_Y': Math.PI,              // -Y forward (Blender default), rotate 180°
 };
 
-/**
- * Default model forward axis
- * Change this if most of your models use a different convention
- */
-const DEFAULT_MODEL_FORWARD: ModelForwardAxis = 'POS_X';
-
 // ============================================================================
-// TYPE DEFINITIONS
+// TYPES
 // ============================================================================
 
 /**
- * Information about a track segment for model placement
+ * Information about a track segment at a specific point
  */
-export interface TrackSegmentInfo {
-    /** Center position on the track */
+interface TrackSegmentInfo {
+    /** Position on track centerline */
     position: Vector3;
-    /** Forward direction along the track (tangent) */
+
+    /** Forward direction along track (tangent) */
     forward: Vector3;
-    /** Right direction (perpendicular to track, in XZ plane) */
+
+    /** Right direction (perpendicular to track, horizontal) */
     right: Vector3;
-    /** The track mesh that was hit */
+
+    /** The track mesh that was clicked */
     trackMesh: AbstractMesh;
-    /** Distance from mouse position to track center */
+
+    /** Distance from click point to centerline */
     distance: number;
+
+    /** Track graph edge ID (if found) */
+    edgeId?: string;
+
+    /** Parametric position on edge (0-1) */
+    t?: number;
 }
 
 /**
- * Result of track placement calculation
+ * Result of placement calculation
  */
 export interface TrackPlacementResult {
-    /** World position for the model (on track centerline) */
+    /** World position for model placement */
     position: Vector3;
-    /** Rotation quaternion aligned with track direction */
+
+    /** Rotation quaternion for model orientation */
     rotation: Quaternion;
-    /** Y-axis rotation in degrees (for display/serialization) */
+
+    /** Rotation in degrees (for display/debugging) */
     rotationDegrees: number;
-    /** The track segment info used for placement */
+
+    /** Track segment info used for calculation */
     segment: TrackSegmentInfo;
-    /** Whether placement is valid (within snap distance) */
+
+    /** Whether placement is valid (close enough to track) */
     isValid: boolean;
 }
 
@@ -138,7 +154,7 @@ export type PlacementCallback = (result: TrackPlacementResult | null) => void;
  * 
  * Provides methods to:
  * - Find track at a given position
- * - Calculate proper placement position and rotation
+ * - Calculate proper placement position and rotation using TrackGraph
  * - Show preview indicator during placement
  * - Handle different model forward axis conventions
  * 
@@ -146,6 +162,7 @@ export type PlacementCallback = (result: TrackPlacementResult | null) => void;
  * ```typescript
  * const placer = new TrackModelPlacer(scene);
  * placer.initialize();
+ * placer.setTrackGraph(trackGraph); // Connect to track system
  * 
  * // Start placement mode
  * placer.startPlacement((result) => {
@@ -165,6 +182,9 @@ export class TrackModelPlacer {
 
     /** Babylon.js scene */
     private scene: Scene;
+
+    /** Track graph for accurate position/direction calculation */
+    private trackGraph: TrackGraph | null = null;
 
     /** Whether placement mode is active */
     private isPlacing: boolean = false;
@@ -193,19 +213,19 @@ export class TrackModelPlacer {
     private boundKeyDown: ((evt: KeyboardEvent) => void) | null = null;
 
     /** Canvas element for pointer events */
-    private canvas: HTMLCanvasElement;
+    private canvas: HTMLCanvasElement | null = null;
 
     /** Current snap result (updated on pointer move) */
     private currentSnapResult: TrackPlacementResult | null = null;
 
-    /** Message overlay element (instructions during placement) */
-    private messageOverlay: HTMLDivElement | null = null;
+    /** Message overlay element */
+    private messageOverlay: HTMLElement | null = null;
 
-    /** Current model forward axis setting */
-    private modelForwardAxis: ModelForwardAxis = DEFAULT_MODEL_FORWARD;
+    /** Model forward axis (which direction model faces in local space) */
+    private modelForwardAxis: ModelForwardAxis = 'POS_Z';
 
     // ========================================================================
-    // CONSTRUCTOR & INITIALIZATION
+    // CONSTRUCTOR
     // ========================================================================
 
     /**
@@ -213,27 +233,49 @@ export class TrackModelPlacer {
      * @param scene - Babylon.js scene
      */
     constructor(scene: Scene) {
+        if (!scene) {
+            throw new Error(`${LOG_PREFIX} Scene is required`);
+        }
         this.scene = scene;
-        this.canvas = scene.getEngine().getRenderingCanvas() as HTMLCanvasElement;
         console.log(`${LOG_PREFIX} Created`);
     }
 
+    // ========================================================================
+    // INITIALIZATION
+    // ========================================================================
+
     /**
      * Initialize the placer
-     * Creates preview meshes and materials
+     * Creates preview indicator and materials
      */
     initialize(): void {
         try {
             console.log(`${LOG_PREFIX} Initializing...`);
 
-            // Create preview materials
-            this.createPreviewMaterials();
+            // Get canvas
+            this.canvas = this.scene.getEngine().getRenderingCanvas();
+            if (!this.canvas) {
+                throw new Error('No rendering canvas found');
+            }
 
-            // Create preview indicator (arrow showing train direction)
+            // Create preview materials
+            this.previewMaterial = new StandardMaterial('trackPlacerPreview', this.scene);
+            this.previewMaterial.diffuseColor = new Color3(0, 1, 0);
+            this.previewMaterial.emissiveColor = new Color3(0, 0.5, 0);
+            this.previewMaterial.alpha = 0.7;
+
+            this.highlightMaterial = new StandardMaterial('trackPlacerHighlight', this.scene);
+            this.highlightMaterial.diffuseColor = new Color3(1, 1, 0);
+            this.highlightMaterial.emissiveColor = new Color3(0.5, 0.5, 0);
+            this.highlightMaterial.alpha = 0.3;
+
+            // Create preview indicator (arrow showing placement direction)
             this.createPreviewIndicator();
 
-            console.log(`${LOG_PREFIX} ✓ Initialized successfully`);
-            console.log(`${LOG_PREFIX} Model forward axis: ${this.modelForwardAxis}`);
+            // Try to get TrackGraph from global trackSystem
+            this.tryGetTrackGraph();
+
+            console.log(`${LOG_PREFIX} ✓ Initialized`);
 
         } catch (error) {
             console.error(`${LOG_PREFIX} Initialization failed:`, error);
@@ -242,88 +284,65 @@ export class TrackModelPlacer {
     }
 
     /**
-     * Set the model forward axis convention
-     * Use this if your models use a different forward direction
-     * 
-     * @param axis - The axis the model's front points along
+     * Try to get TrackGraph from the global trackSystem
      */
-    setModelForwardAxis(axis: ModelForwardAxis): void {
-        this.modelForwardAxis = axis;
-        console.log(`${LOG_PREFIX} Model forward axis set to: ${axis}`);
-    }
-
-    /**
-     * Get the current model forward axis
-     */
-    getModelForwardAxis(): ModelForwardAxis {
-        return this.modelForwardAxis;
-    }
-
-    // ========================================================================
-    // MATERIAL CREATION
-    // ========================================================================
-
-    /**
-     * Create materials for preview and highlighting
-     */
-    private createPreviewMaterials(): void {
+    private tryGetTrackGraph(): void {
         try {
-            // Preview indicator material (cyan/turquoise)
-            this.previewMaterial = new StandardMaterial('trackPlacerPreview', this.scene);
-            this.previewMaterial.diffuseColor = new Color3(0.0, 0.8, 0.8);
-            this.previewMaterial.emissiveColor = new Color3(0.0, 0.4, 0.4);
-            this.previewMaterial.alpha = 0.8;
-            this.previewMaterial.backFaceCulling = false;
-
-            // Track highlight material (yellow glow)
-            this.highlightMaterial = new StandardMaterial('trackHighlight', this.scene);
-            this.highlightMaterial.diffuseColor = new Color3(1.0, 0.9, 0.0);
-            this.highlightMaterial.emissiveColor = new Color3(0.5, 0.45, 0.0);
-            this.highlightMaterial.alpha = 0.7;
-
-            console.log(`${LOG_PREFIX} Preview materials created`);
-
+            const trackSystem = (window as any).trackSystem;
+            if (trackSystem && typeof trackSystem.getGraph === 'function') {
+                this.trackGraph = trackSystem.getGraph();
+                console.log(`${LOG_PREFIX} ✓ TrackGraph connected`);
+            } else {
+                console.warn(`${LOG_PREFIX} TrackGraph not available - will use fallback mesh-based orientation`);
+            }
         } catch (error) {
-            console.error(`${LOG_PREFIX} Error creating materials:`, error);
+            console.warn(`${LOG_PREFIX} Could not get TrackGraph:`, error);
         }
     }
 
     /**
+     * Set the track graph reference
+     * @param graph - TrackGraph instance
+     */
+    setTrackGraph(graph: TrackGraph): void {
+        this.trackGraph = graph;
+        console.log(`${LOG_PREFIX} TrackGraph set`);
+    }
+
+    /**
      * Create the preview indicator mesh
-     * Shows an arrow indicating train direction on the track
+     * An arrow that shows where and which direction the train will face
      */
     private createPreviewIndicator(): void {
         try {
-            // Create an arrow-like shape to show direction
-            // Main body (elongated box representing train direction)
-            const body = MeshBuilder.CreateBox('placerPreviewBody', {
-                width: 0.02,   // Narrow width (across track)
-                height: 0.015, // Height
-                depth: 0.08,   // Long depth (along track)
+            // Create arrow shape pointing in +Z direction
+            const arrowLength = 0.05; // 50mm
+            const arrowWidth = 0.02;  // 20mm
+
+            // Create a simple arrow using a box and cone
+            const body = MeshBuilder.CreateBox('previewBody', {
+                width: arrowWidth * 0.5,
+                height: 0.01,
+                depth: arrowLength * 0.7
             }, this.scene);
 
-            // Arrow head (cone pointing forward)
-            const head = MeshBuilder.CreateCylinder('placerPreviewHead', {
-                height: 0.03,
+            const head = MeshBuilder.CreateCylinder('previewHead', {
+                height: arrowLength * 0.3,
                 diameterTop: 0,
-                diameterBottom: 0.025,
-                tessellation: 8,
+                diameterBottom: arrowWidth,
+                tessellation: 4
             }, this.scene);
 
-            // Position arrow head at front of body
-            head.position.z = 0.055; // Front of body
-            head.rotation.x = Math.PI / 2; // Point along Z axis
+            // Position head at front of body
+            head.rotation.x = Math.PI / 2;
+            head.position.z = arrowLength * 0.5;
 
             // Merge into single mesh
-            this.previewIndicator = MeshBuilder.CreateBox('placerPreview', {
-                width: 0.02,
+            this.previewIndicator = MeshBuilder.CreateBox('previewIndicator', {
+                width: arrowWidth,
                 height: 0.015,
-                depth: 0.08,
+                depth: arrowLength
             }, this.scene);
-
-            // Dispose temporary meshes
-            body.dispose();
-            head.dispose();
 
             // Apply material
             if (this.previewMaterial) {
@@ -334,230 +353,270 @@ export class TrackModelPlacer {
             this.previewIndicator.isVisible = false;
             this.previewIndicator.isPickable = false;
 
-            console.log(`${LOG_PREFIX} Preview indicator created`);
+            // Clean up temp meshes
+            body.dispose();
+            head.dispose();
+
+            console.log(`${LOG_PREFIX} ✓ Preview indicator created`);
 
         } catch (error) {
-            console.error(`${LOG_PREFIX} Error creating preview indicator:`, error);
+            console.error(`${LOG_PREFIX} Failed to create preview indicator:`, error);
         }
     }
 
     // ========================================================================
-    // TRACK DETECTION
+    // MODEL FORWARD AXIS CONFIGURATION
     // ========================================================================
 
     /**
-     * Check if there are any track pieces in the scene
-     * @returns True if at least one track mesh exists
+     * Set which axis the model's "front" faces in local space
+     * Use this if your train faces sideways on the track
+     * 
+     * @param axis - The forward axis
      */
-    hasTrackPieces(): boolean {
-        const trackMeshes = this.findTrackMeshes();
-        return trackMeshes.length > 0;
+    setModelForwardAxis(axis: ModelForwardAxis): void {
+        this.modelForwardAxis = axis;
+        console.log(`${LOG_PREFIX} Model forward axis set to: ${axis}`);
+        console.log(`${LOG_PREFIX}   Offset: ${(FORWARD_AXIS_OFFSETS[axis] * 180 / Math.PI).toFixed(1)}°`);
     }
 
     /**
-     * Get default placement on the first available track piece
-     * Used for automatic placement of rolling stock
-     * 
-     * @returns Placement result for center of first track, or null if no track
+     * Get current model forward axis
      */
-    getDefaultPlacement(): TrackPlacementResult | null {
-        try {
-            console.log(`${LOG_PREFIX} Getting default placement...`);
+    getModelForwardAxis(): ModelForwardAxis {
+        return this.modelForwardAxis;
+    }
 
-            // Find all track meshes
-            const trackMeshes = this.findTrackMeshes();
-            if (trackMeshes.length === 0) {
-                console.warn(`${LOG_PREFIX} No track meshes found for default placement`);
+    // ========================================================================
+    // TRACK GRAPH INTEGRATION
+    // ========================================================================
+
+    /**
+     * Find the nearest track edge to a world position
+     * Uses TrackGraph for accurate edge detection
+     * 
+     * @param position - World position to search from
+     * @returns Nearest edge info or null
+     */
+    private findNearestEdge(position: Vector3): {
+        edge: GraphEdge;
+        t: number;
+        position: Vector3;
+        forward: Vector3;
+        distance: number;
+    } | null {
+        if (!this.trackGraph) {
+            return null;
+        }
+
+        try {
+            const edges = this.trackGraph.getAllEdges();
+            if (edges.length === 0) {
                 return null;
             }
 
-            // Try to find a track piece with proper rail structure
-            for (const mesh of trackMeshes) {
-                const segment = this.getTrackSegmentInfoFromMesh(mesh);
-                if (segment) {
-                    const result = this.calculatePlacement(segment);
-                    console.log(`${LOG_PREFIX} ✓ Default placement found on: ${mesh.name}`);
-                    return result;
+            let bestResult: {
+                edge: GraphEdge;
+                t: number;
+                position: Vector3;
+                forward: Vector3;
+                distance: number;
+            } | null = null;
+
+            for (const edge of edges) {
+                const fromNode = this.trackGraph.getNode(edge.fromNodeId);
+                const toNode = this.trackGraph.getNode(edge.toNodeId);
+
+                if (!fromNode || !toNode || !fromNode.pos || !toNode.pos) {
+                    continue;
                 }
-            }
 
-            console.warn(`${LOG_PREFIX} Could not calculate default placement from any track mesh`);
-            return null;
+                // Sample along edge to find closest point
+                for (let i = 0; i <= SNAP_CONFIG.SAMPLES_PER_EDGE; i++) {
+                    const t = i / SNAP_CONFIG.SAMPLES_PER_EDGE;
+                    const sample = this.getPositionOnEdge(edge, fromNode, toNode, t);
 
-        } catch (error) {
-            console.error(`${LOG_PREFIX} Error getting default placement:`, error);
-            return null;
-        }
-    }
+                    if (!sample) continue;
 
-    /**
-     * Get track segment info from a mesh (without picking)
-     * Used for automatic placement
-     * 
-     * @param mesh - A track mesh
-     * @returns Track segment info or null
-     */
-    private getTrackSegmentInfoFromMesh(mesh: AbstractMesh): TrackSegmentInfo | null {
-        try {
-            // Get the parent transform node to find sibling rails
-            const parent = mesh.parent;
+                    // Calculate horizontal distance (ignore Y)
+                    const dx = position.x - sample.position.x;
+                    const dz = position.z - sample.position.z;
+                    const dist = Math.sqrt(dx * dx + dz * dz);
 
-            if (parent) {
-                // Find left and right rail meshes
-                const children = parent.getChildMeshes();
-                let leftRail: AbstractMesh | null = null;
-                let rightRail: AbstractMesh | null = null;
-
-                for (const child of children) {
-                    if (child.name.includes('rail_left') || child.name.includes('leftRail')) {
-                        leftRail = child;
-                    } else if (child.name.includes('rail_right') || child.name.includes('rightRail')) {
-                        rightRail = child;
+                    if (!bestResult || dist < bestResult.distance) {
+                        bestResult = {
+                            edge,
+                            t,
+                            position: sample.position,
+                            forward: sample.forward,
+                            distance: dist
+                        };
                     }
                 }
-
-                if (leftRail && rightRail) {
-                    // Calculate centerline from rail positions
-                    const leftBounds = leftRail.getBoundingInfo().boundingBox;
-                    const rightBounds = rightRail.getBoundingInfo().boundingBox;
-
-                    // Get world centers of rails
-                    const leftCenter = leftBounds.centerWorld.clone();
-                    const rightCenter = rightBounds.centerWorld.clone();
-
-                    // Track centerline is midpoint between rails
-                    const centerX = (leftCenter.x + rightCenter.x) / 2;
-                    const centerY = Math.max(leftCenter.y, rightCenter.y);
-                    const centerZ = (leftCenter.z + rightCenter.z) / 2;
-
-                    // Rail vector points from left to right rail
-                    const railVector = rightCenter.subtract(leftCenter).normalize();
-
-                    // Track forward direction is perpendicular to rail vector (in XZ plane)
-                    // Rotate rail vector 90° around Y axis
-                    const forward = new Vector3(-railVector.z, 0, railVector.x).normalize();
-
-                    // Right direction (same as rail vector, pointing from center toward right rail)
-                    const right = railVector.clone();
-
-                    // Position at centerline with height offset for model
-                    const position = new Vector3(
-                        centerX,
-                        centerY + OO_GAUGE.MODEL_HEIGHT_OFFSET_M,
-                        centerZ
-                    );
-
-                    return {
-                        position: position,
-                        forward: forward,
-                        right: right,
-                        trackMesh: mesh,
-                        distance: 0  // Default placement is exactly on centerline
-                    };
-                }
             }
 
-            // Fallback: use mesh orientation directly
-            const meshBounds = mesh.getBoundingInfo().boundingBox;
-            const meshCenter = meshBounds.centerWorld.clone();
-
-            // Try to get orientation from mesh rotation
-            const meshRotation = mesh.rotationQuaternion ||
-                Quaternion.FromEulerAngles(
-                    mesh.rotation.x,
-                    mesh.rotation.y,
-                    mesh.rotation.z
-                );
-
-            // Default forward is along Z axis, rotated by mesh rotation
-            const forward = new Vector3(0, 0, 1);
-            forward.rotateByQuaternionToRef(meshRotation, forward);
-            forward.y = 0;
-            forward.normalize();
-
-            const right = Vector3.Cross(Vector3.Up(), forward).normalize();
-
-            return {
-                position: new Vector3(meshCenter.x, meshCenter.y + OO_GAUGE.MODEL_HEIGHT_OFFSET_M, meshCenter.z),
-                forward: forward,
-                right: right,
-                trackMesh: mesh,
-                distance: 0
-            };
+            return bestResult;
 
         } catch (error) {
-            console.error(`${LOG_PREFIX} Error getting track segment info from mesh:`, error);
+            console.error(`${LOG_PREFIX} Error finding nearest edge:`, error);
             return null;
         }
     }
 
     /**
-     * Find all track meshes in the scene
-     * @returns Array of track meshes
+     * Get position and forward direction at a point on an edge
+     * 
+     * @param edge - The track edge
+     * @param fromNode - Start node
+     * @param toNode - End node
+     * @param t - Parametric position (0-1)
+     * @returns Position and forward direction
      */
-    private findTrackMeshes(): AbstractMesh[] {
+    private getPositionOnEdge(
+        edge: GraphEdge,
+        fromNode: GraphNode,
+        toNode: GraphNode,
+        t: number
+    ): { position: Vector3; forward: Vector3 } | null {
         try {
-            const trackMeshes: AbstractMesh[] = [];
-
-            for (const mesh of this.scene.meshes) {
-                // Track meshes have names like "rail_left_...", "rail_right_...", "sleeper_...", etc.
-                // We want the rail meshes for accurate centerline calculation
-                if (mesh.name.startsWith('rail_') ||
-                    mesh.name.startsWith('track_') ||
-                    mesh.name.includes('_rail_') ||
-                    mesh.name.includes('Track')) {
-                    trackMeshes.push(mesh);
-                }
+            if (!fromNode.pos || !toNode.pos) {
+                return null;
             }
 
-            return trackMeshes;
+            if (edge.curve.type === 'straight') {
+                return this.getStraightPosition(fromNode.pos, toNode.pos, t);
+            } else if (edge.curve.type === 'arc') {
+                return this.getArcPosition(fromNode.pos, toNode.pos, edge.curve, t);
+            } else {
+                // Fallback to straight
+                return this.getStraightPosition(fromNode.pos, toNode.pos, t);
+            }
 
         } catch (error) {
-            console.error(`${LOG_PREFIX} Error finding track meshes:`, error);
-            return [];
+            console.error(`${LOG_PREFIX} Error getting position on edge:`, error);
+            return null;
         }
     }
 
     /**
-     * Find track at a pointer position
-     * Uses ray casting to detect track meshes under the pointer
+     * Get position on a straight edge
      * 
-     * @param pointerX - Pointer X position
-     * @param pointerY - Pointer Y position
-     * @returns Track segment info or null if no track found
+     * @param start - Start position
+     * @param end - End position
+     * @param t - Parametric position (0-1)
+     * @returns Position and forward direction
      */
-    private findTrackAtPointer(pointerX: number, pointerY: number): TrackSegmentInfo | null {
+    private getStraightPosition(
+        start: Vector3,
+        end: Vector3,
+        t: number
+    ): { position: Vector3; forward: Vector3 } {
+        const position = Vector3.Lerp(start, end, t);
+
+        let forward = end.subtract(start);
+        if (forward.length() < 0.0001) {
+            forward = new Vector3(0, 0, 1);
+        } else {
+            forward = forward.normalize();
+        }
+
+        // Ensure forward is horizontal
+        forward.y = 0;
+        if (forward.length() > 0.0001) {
+            forward.normalize();
+        } else {
+            forward = new Vector3(0, 0, 1);
+        }
+
+        return { position, forward };
+    }
+
+    /**
+     * Get position on a curved arc edge
+     * 
+     * @param start - Start position
+     * @param end - End position
+     * @param curve - Curve definition
+     * @param t - Parametric position (0-1)
+     * @returns Position and forward direction
+     */
+    private getArcPosition(
+        start: Vector3,
+        end: Vector3,
+        curve: CurveDefinition,
+        t: number
+    ): { position: Vector3; forward: Vector3 } {
         try {
-            // Create ray from camera through pointer position
-            const ray = this.scene.createPickingRay(
-                pointerX,
-                pointerY,
-                null,
-                this.scene.activeCamera
+            const radius = curve.arcRadiusM || 0.371;
+            const angleDeg = curve.arcAngleDeg || 45;
+            const direction = curve.arcDirection || 1;
+
+            // Calculate arc geometry
+            const startToEnd = end.subtract(start);
+            if (startToEnd.length() < 0.0001) {
+                return { position: start.clone(), forward: new Vector3(0, 0, 1) };
+            }
+
+            const startDir = startToEnd.normalize();
+
+            // Perpendicular direction (toward arc center)
+            const perpendicular = new Vector3(
+                -startDir.z * direction,
+                0,
+                startDir.x * direction
             );
 
-            if (!ray) {
-                return null;
-            }
+            // Arc center
+            const center = start.add(perpendicular.scale(radius));
 
-            // Find track meshes
-            const trackMeshes = this.findTrackMeshes();
+            // Calculate position on arc
+            const startAngle = Math.atan2(
+                start.x - center.x,
+                start.z - center.z
+            );
 
-            if (trackMeshes.length === 0) {
-                return null;
-            }
+            const angleRad = (angleDeg * Math.PI / 180) * direction;
+            const currentAngle = startAngle + angleRad * t;
 
-            // Pick against track meshes
-            const pickResult = this.scene.pickWithRay(ray, (mesh) => {
-                return trackMeshes.includes(mesh) && mesh.isPickable;
+            const position = new Vector3(
+                center.x + radius * Math.sin(currentAngle),
+                start.y + (end.y - start.y) * t,
+                center.z + radius * Math.cos(currentAngle)
+            );
+
+            // Calculate tangent (forward direction)
+            const tangentAngle = currentAngle + (Math.PI / 2) * direction;
+            const forward = new Vector3(
+                Math.sin(tangentAngle),
+                0,
+                Math.cos(tangentAngle)
+            ).normalize();
+
+            return { position, forward };
+
+        } catch (error) {
+            console.error(`${LOG_PREFIX} Error calculating arc position:`, error);
+            return this.getStraightPosition(start, end, t);
+        }
+    }
+
+    // ========================================================================
+    // TRACK DETECTION (MESH-BASED FALLBACK)
+    // ========================================================================
+
+    /**
+     * Find track mesh at pointer position
+     * @param pointerX - Screen X coordinate
+     * @param pointerY - Screen Y coordinate
+     * @returns Pick result or null
+     */
+    private findTrackAtPointer(pointerX: number, pointerY: number): PickingInfo | null {
+        try {
+            const pickResult = this.scene.pick(pointerX, pointerY, (mesh) => {
+                return this.isTrackMesh(mesh);
             });
 
-            if (!pickResult || !pickResult.hit || !pickResult.pickedMesh || !pickResult.pickedPoint) {
-                return null;
-            }
-
-            // Get track segment info
-            return this.getTrackSegmentInfo(pickResult);
+            return pickResult?.hit ? pickResult : null;
 
         } catch (error) {
             console.error(`${LOG_PREFIX} Error finding track at pointer:`, error);
@@ -566,8 +625,23 @@ export class TrackModelPlacer {
     }
 
     /**
+     * Check if a mesh is a track mesh
+     * @param mesh - Mesh to check
+     * @returns True if this is a track mesh
+     */
+    private isTrackMesh(mesh: AbstractMesh): boolean {
+        const name = mesh.name.toLowerCase();
+        return (
+            name.includes('rail') ||
+            name.includes('track') ||
+            name.includes('sleeper') ||
+            name.includes('ballast')
+        );
+    }
+
+    /**
      * Extract track segment information from a pick result
-     * Calculates centerline position and track direction
+     * Uses TrackGraph if available, falls back to mesh-based calculation
      * 
      * @param pickResult - Babylon.js picking result
      * @returns Track segment info or null
@@ -583,8 +657,60 @@ export class TrackModelPlacer {
 
             console.log(`${LOG_PREFIX} Pick hit mesh: ${pickedMesh.name}`);
 
+            // ================================================================
+            // TRY TRACK GRAPH FIRST (most accurate)
+            // ================================================================
+            if (this.trackGraph) {
+                const nearestEdge = this.findNearestEdge(hitPoint);
+
+                if (nearestEdge && nearestEdge.distance < SNAP_CONFIG.MAX_DISTANCE_M) {
+                    console.log(`${LOG_PREFIX} Using TrackGraph edge: ${nearestEdge.edge.id}`);
+                    console.log(`${LOG_PREFIX}   Position: (${nearestEdge.position.x.toFixed(3)}, ${nearestEdge.position.z.toFixed(3)})`);
+                    console.log(`${LOG_PREFIX}   Forward: (${nearestEdge.forward.x.toFixed(3)}, ${nearestEdge.forward.z.toFixed(3)})`);
+                    console.log(`${LOG_PREFIX}   t: ${nearestEdge.t.toFixed(2)}, Distance: ${(nearestEdge.distance * 1000).toFixed(1)}mm`);
+
+                    // Calculate right vector
+                    const right = Vector3.Cross(Vector3.Up(), nearestEdge.forward).normalize();
+
+                    // Adjust Y position for model height
+                    const position = nearestEdge.position.clone();
+                    position.y += OO_GAUGE.MODEL_HEIGHT_OFFSET_M;
+
+                    return {
+                        position,
+                        forward: nearestEdge.forward,
+                        right,
+                        trackMesh: pickedMesh,
+                        distance: nearestEdge.distance,
+                        edgeId: nearestEdge.edge.id,
+                        t: nearestEdge.t
+                    };
+                }
+            }
+
+            // ================================================================
+            // FALLBACK: MESH-BASED CALCULATION
+            // ================================================================
+            console.log(`${LOG_PREFIX} Using fallback mesh-based orientation`);
+            return this.getTrackSegmentInfoFromMesh(pickedMesh, hitPoint);
+
+        } catch (error) {
+            console.error(`${LOG_PREFIX} Error getting track segment info:`, error);
+            return null;
+        }
+    }
+
+    /**
+     * Get track segment info from mesh (fallback method)
+     * 
+     * @param mesh - Track mesh
+     * @param hitPoint - Point where mesh was clicked
+     * @returns Track segment info or null
+     */
+    private getTrackSegmentInfoFromMesh(mesh: AbstractMesh, hitPoint: Vector3): TrackSegmentInfo | null {
+        try {
             // Get the parent transform node to find sibling rails
-            const parent = pickedMesh.parent;
+            const parent = mesh.parent;
 
             if (parent) {
                 // Find left and right rail meshes
@@ -593,9 +719,10 @@ export class TrackModelPlacer {
                 let rightRail: AbstractMesh | null = null;
 
                 for (const child of children) {
-                    if (child.name.includes('rail_left') || child.name.includes('leftRail')) {
+                    const childName = child.name.toLowerCase();
+                    if (childName.includes('rail_left') || childName.includes('leftrail')) {
                         leftRail = child;
-                    } else if (child.name.includes('rail_right') || child.name.includes('rightRail')) {
+                    } else if (childName.includes('rail_right') || childName.includes('rightrail')) {
                         rightRail = child;
                     }
                 }
@@ -605,11 +732,10 @@ export class TrackModelPlacer {
                     const leftBounds = leftRail.getBoundingInfo().boundingBox;
                     const rightBounds = rightRail.getBoundingInfo().boundingBox;
 
-                    // Get world centers of rails
                     const leftCenter = leftBounds.centerWorld.clone();
                     const rightCenter = rightBounds.centerWorld.clone();
 
-                    // Track centerline is midpoint between rails
+                    // Track centerline
                     const centerX = (leftCenter.x + rightCenter.x) / 2;
                     const centerY = Math.max(leftCenter.y, rightCenter.y);
                     const centerZ = (leftCenter.z + rightCenter.z) / 2;
@@ -617,51 +743,44 @@ export class TrackModelPlacer {
                     // Rail vector points from left to right rail
                     const railVector = rightCenter.subtract(leftCenter).normalize();
 
-                    // Track forward direction is perpendicular to rail vector (in XZ plane)
-                    // Rotate rail vector 90° around Y axis
+                    // Track forward is perpendicular to rail vector
                     const forward = new Vector3(-railVector.z, 0, railVector.x).normalize();
-
-                    // Right direction (same as rail vector, pointing from center toward right rail)
                     const right = railVector.clone();
 
-                    // Snap hit point to centerline position
-                    const snappedPosition = new Vector3(
+                    // Calculate distance from hit point to centerline
+                    const dx = hitPoint.x - centerX;
+                    const dz = hitPoint.z - centerZ;
+                    const distance = Math.sqrt(dx * dx + dz * dz);
+
+                    const position = new Vector3(
                         centerX,
                         centerY + OO_GAUGE.MODEL_HEIGHT_OFFSET_M,
                         centerZ
                     );
 
-                    // Calculate distance from pointer to centerline
-                    const centerLine = new Vector3(centerX, centerY, centerZ);
-                    const toHit = hitPoint.subtract(centerLine);
-                    const distance = Math.abs(toHit.x * right.x + toHit.z * right.z);
-
-                    console.log(`${LOG_PREFIX} Track segment calculated:`);
-                    console.log(`${LOG_PREFIX}   Position: (${snappedPosition.x.toFixed(3)}, ${snappedPosition.y.toFixed(3)}, ${snappedPosition.z.toFixed(3)})`);
-                    console.log(`${LOG_PREFIX}   Forward:  (${forward.x.toFixed(3)}, ${forward.y.toFixed(3)}, ${forward.z.toFixed(3)})`);
+                    console.log(`${LOG_PREFIX} Mesh-based orientation:`);
+                    console.log(`${LOG_PREFIX}   Position: (${position.x.toFixed(3)}, ${position.z.toFixed(3)})`);
+                    console.log(`${LOG_PREFIX}   Forward: (${forward.x.toFixed(3)}, ${forward.z.toFixed(3)})`);
 
                     return {
-                        position: snappedPosition,
-                        forward: forward,
-                        right: right,
-                        trackMesh: pickedMesh,
-                        distance: distance
+                        position,
+                        forward,
+                        right,
+                        trackMesh: mesh,
+                        distance
                     };
                 }
             }
 
-            // Fallback: use mesh orientation directly
-            console.log(`${LOG_PREFIX} Using fallback orientation (rails not found separately)`);
+            // Ultimate fallback: use mesh orientation directly
+            console.log(`${LOG_PREFIX} Using mesh rotation fallback`);
 
-            // Try to get orientation from mesh rotation
-            const meshRotation = pickedMesh.rotationQuaternion ||
-                Quaternion.FromEulerAngles(
-                    pickedMesh.rotation.x,
-                    pickedMesh.rotation.y,
-                    pickedMesh.rotation.z
-                );
+            const meshBounds = mesh.getBoundingInfo().boundingBox;
+            const meshCenter = meshBounds.centerWorld.clone();
 
-            // Default forward is along Z axis, rotated by mesh rotation
+            const meshRotation = mesh.rotationQuaternion ||
+                Quaternion.FromEulerAngles(mesh.rotation.x, mesh.rotation.y, mesh.rotation.z);
+
             const forward = new Vector3(0, 0, 1);
             forward.rotateByQuaternionToRef(meshRotation, forward);
             forward.y = 0;
@@ -670,15 +789,19 @@ export class TrackModelPlacer {
             const right = Vector3.Cross(Vector3.Up(), forward).normalize();
 
             return {
-                position: hitPoint.clone(),
-                forward: forward,
-                right: right,
-                trackMesh: pickedMesh,
+                position: new Vector3(
+                    meshCenter.x,
+                    meshCenter.y + OO_GAUGE.MODEL_HEIGHT_OFFSET_M,
+                    meshCenter.z
+                ),
+                forward,
+                right,
+                trackMesh: mesh,
                 distance: 0
             };
 
         } catch (error) {
-            console.error(`${LOG_PREFIX} Error getting track segment info:`, error);
+            console.error(`${LOG_PREFIX} Error getting track segment info from mesh:`, error);
             return null;
         }
     }
@@ -690,10 +813,8 @@ export class TrackModelPlacer {
     /**
      * Calculate placement position and rotation from track segment
      * 
-     * This is the key method that ensures the train faces ALONG the track,
-     * not across it. The rotation is calculated based on:
-     * 1. The track's forward direction (tangent along the rails)
-     * 2. The model's expected forward axis convention
+     * The train will face ALONG the track direction (from fromNode to toNode
+     * when using TrackGraph, or perpendicular to rails when using mesh fallback).
      * 
      * @param segment - Track segment information
      * @returns Placement result with position, rotation, and validity
@@ -711,7 +832,6 @@ export class TrackModelPlacer {
         const modelOffset = FORWARD_AXIS_OFFSETS[this.modelForwardAxis];
 
         // Final rotation angle = track angle + model offset
-        // This rotates the model so its "front" aligns with the track direction
         const finalAngle = trackAngle + modelOffset;
 
         // Convert to degrees for display/debugging
@@ -725,9 +845,12 @@ export class TrackModelPlacer {
 
         console.log(`${LOG_PREFIX} Placement calculated:`);
         console.log(`${LOG_PREFIX}   Track angle: ${(trackAngle * 180 / Math.PI).toFixed(1)}°`);
-        console.log(`${LOG_PREFIX}   Model offset: ${(modelOffset * 180 / Math.PI).toFixed(1)}°`);
+        console.log(`${LOG_PREFIX}   Model offset: ${(modelOffset * 180 / Math.PI).toFixed(1)}° (${this.modelForwardAxis})`);
         console.log(`${LOG_PREFIX}   Final rotation: ${rotationDegrees.toFixed(1)}°`);
         console.log(`${LOG_PREFIX}   Valid: ${isValid}`);
+        if (segment.edgeId) {
+            console.log(`${LOG_PREFIX}   Edge: ${segment.edgeId}, t: ${segment.t?.toFixed(2)}`);
+        }
 
         return {
             position,
@@ -764,273 +887,267 @@ export class TrackModelPlacer {
 
             console.log(`${LOG_PREFIX} Starting placement mode...`);
 
+            // Try to get track graph if not already connected
+            if (!this.trackGraph) {
+                this.tryGetTrackGraph();
+            }
+
             this.isPlacing = true;
             this.placementCallback = callback;
             this.currentSnapResult = null;
 
+            // Dispatch event so InputManager knows to not intercept clicks
+            window.dispatchEvent(new CustomEvent('trackPlacementStart'));
+
             // Show instruction message
             this.showMessage('Click on a track piece to place the train. Press ESC to cancel.');
 
-            // ============================================================
-            // NOTIFY OTHER SYSTEMS (InputManager) TO DISABLE THEMSELVES
-            // This prevents InputManager from intercepting clicks meant
-            // for train placement
-            // ============================================================
-            window.dispatchEvent(new CustomEvent('trackPlacementStart'));
-            console.log(`${LOG_PREFIX} Dispatched trackPlacementStart event`);
-
-            // Bind event handlers
-            this.boundPointerMove = this.onPointerMove.bind(this);
-            this.boundPointerDown = this.onPointerDown.bind(this);
-            this.boundKeyDown = this.onKeyDown.bind(this);
-
-            this.canvas.addEventListener('pointermove', this.boundPointerMove);
-            this.canvas.addEventListener('pointerdown', this.boundPointerDown);
-            window.addEventListener('keydown', this.boundKeyDown);
-
-            // Show preview indicator
-            if (this.previewIndicator) {
-                this.previewIndicator.isVisible = true;
-            }
+            // Setup event handlers
+            this.setupPlacementHandlers();
 
             console.log(`${LOG_PREFIX} ✓ Placement mode active`);
 
         } catch (error) {
-            console.error(`${LOG_PREFIX} Error starting placement:`, error);
+            console.error(`${LOG_PREFIX} Failed to start placement:`, error);
             this.cancelPlacement();
         }
     }
 
     /**
-     * Cancel placement mode without completing
+     * Cancel placement mode without placing
      */
     cancelPlacement(): void {
-        this.endPlacement(null);
+        console.log(`${LOG_PREFIX} Cancelling placement...`);
+
+        // Call callback with null to indicate cancellation
+        if (this.placementCallback) {
+            this.placementCallback(null);
+        }
+
+        this.endPlacement();
     }
 
     /**
-     * End placement mode
-     * @param result - Placement result or null if cancelled
+     * End placement mode (cleanup)
      */
-    /**
- * End placement mode
- * @param result - Placement result or null if cancelled
- */
-    private endPlacement(result: TrackPlacementResult | null): void {
-        try {
-            console.log(`${LOG_PREFIX} Ending placement mode...`);
+    private endPlacement(): void {
+        this.isPlacing = false;
+        this.placementCallback = null;
+        this.currentSnapResult = null;
 
-            // Remove event listeners
+        // Dispatch event so InputManager resumes normal operation
+        window.dispatchEvent(new CustomEvent('trackPlacementEnd'));
+
+        // Remove event handlers
+        this.removePlacementHandlers();
+
+        // Hide preview
+        if (this.previewIndicator) {
+            this.previewIndicator.isVisible = false;
+        }
+
+        // Clear highlights
+        this.clearTrackHighlights();
+
+        // Hide message
+        this.hideMessage();
+
+        console.log(`${LOG_PREFIX} Placement mode ended`);
+    }
+
+    // ========================================================================
+    // PLACEMENT EVENT HANDLERS
+    // ========================================================================
+
+    /**
+     * Setup event handlers for placement mode
+     */
+    private setupPlacementHandlers(): void {
+        if (!this.canvas) return;
+
+        // Pointer move - show preview
+        this.boundPointerMove = (evt: PointerEvent) => {
+            this.handlePlacementPointerMove(evt);
+        };
+
+        // Pointer down - confirm placement
+        this.boundPointerDown = (evt: PointerEvent) => {
+            this.handlePlacementPointerDown(evt);
+        };
+
+        // Key down - cancel on escape
+        this.boundKeyDown = (evt: KeyboardEvent) => {
+            if (evt.key === 'Escape') {
+                this.cancelPlacement();
+            }
+        };
+
+        // Use capture phase to get events before InputManager
+        this.canvas.addEventListener('pointermove', this.boundPointerMove, { capture: true });
+        this.canvas.addEventListener('pointerdown', this.boundPointerDown, { capture: true });
+        window.addEventListener('keydown', this.boundKeyDown);
+    }
+
+    /**
+     * Remove event handlers
+     */
+    private removePlacementHandlers(): void {
+        if (this.canvas) {
             if (this.boundPointerMove) {
-                this.canvas.removeEventListener('pointermove', this.boundPointerMove);
-                this.boundPointerMove = null;
+                this.canvas.removeEventListener('pointermove', this.boundPointerMove, { capture: true });
             }
             if (this.boundPointerDown) {
-                this.canvas.removeEventListener('pointerdown', this.boundPointerDown);
-                this.boundPointerDown = null;
+                this.canvas.removeEventListener('pointerdown', this.boundPointerDown, { capture: true });
             }
-            if (this.boundKeyDown) {
-                window.removeEventListener('keydown', this.boundKeyDown);
-                this.boundKeyDown = null;
-            }
-
-            // Hide preview
-            if (this.previewIndicator) {
-                this.previewIndicator.isVisible = false;
-            }
-
-            // Clear highlight
-            this.clearTrackHighlight();
-
-            // Hide message
-            this.hideMessage();
-
-            // ============================================================
-            // NOTIFY OTHER SYSTEMS (InputManager) TO RE-ENABLE THEMSELVES
-            // This allows InputManager to resume normal track selection
-            // after placement is complete or cancelled
-            // ============================================================
-            window.dispatchEvent(new CustomEvent('trackPlacementEnd'));
-            console.log(`${LOG_PREFIX} Dispatched trackPlacementEnd event`);
-
-            // Call callback
-            const callback = this.placementCallback;
-            this.placementCallback = null;
-            this.isPlacing = false;
-            this.currentSnapResult = null;
-
-            if (callback) {
-                callback(result);
-            }
-
-            console.log(`${LOG_PREFIX} Placement mode ended (${result ? 'completed' : 'cancelled'})`);
-
-        } catch (error) {
-            console.error(`${LOG_PREFIX} Error ending placement:`, error);
         }
-    }
 
-    // ========================================================================
-    // EVENT HANDLERS
-    // ========================================================================
+        if (this.boundKeyDown) {
+            window.removeEventListener('keydown', this.boundKeyDown);
+        }
+
+        this.boundPointerMove = null;
+        this.boundPointerDown = null;
+        this.boundKeyDown = null;
+    }
 
     /**
      * Handle pointer move during placement
-     * Updates preview indicator and track highlighting
      */
-    private onPointerMove(evt: PointerEvent): void {
-        try {
-            const segment = this.findTrackAtPointer(evt.clientX, evt.clientY);
+    private handlePlacementPointerMove(evt: PointerEvent): void {
+        if (!this.isPlacing) return;
+
+        // Find track under pointer
+        const pickResult = this.findTrackAtPointer(evt.clientX, evt.clientY);
+
+        if (pickResult) {
+            // Get track segment info
+            const segment = this.getTrackSegmentInfo(pickResult);
 
             if (segment) {
                 // Calculate placement
                 this.currentSnapResult = this.calculatePlacement(segment);
 
-                // Update preview indicator
-                if (this.previewIndicator && this.currentSnapResult) {
-                    this.previewIndicator.position = this.currentSnapResult.position.clone();
-                    this.previewIndicator.rotationQuaternion = this.currentSnapResult.rotation.clone();
-                    this.previewIndicator.isVisible = true;
-
-                    // Change color based on validity
-                    if (this.previewMaterial) {
-                        if (this.currentSnapResult.isValid) {
-                            // Green for valid
-                            this.previewMaterial.diffuseColor = new Color3(0.0, 0.8, 0.3);
-                            this.previewMaterial.emissiveColor = new Color3(0.0, 0.4, 0.15);
-                        } else {
-                            // Red for invalid (too far from centerline)
-                            this.previewMaterial.diffuseColor = new Color3(0.8, 0.2, 0.2);
-                            this.previewMaterial.emissiveColor = new Color3(0.4, 0.1, 0.1);
-                        }
-                    }
-                }
+                // Update preview
+                this.updatePreview(this.currentSnapResult);
 
                 // Highlight track
                 this.highlightTrack(segment.trackMesh);
-
             } else {
-                // Not over track
                 this.currentSnapResult = null;
-
-                // Hide preview
-                if (this.previewIndicator) {
-                    this.previewIndicator.isVisible = false;
-                }
-
-                // Clear highlight
-                this.clearTrackHighlight();
+                this.hidePreview();
+                this.clearTrackHighlights();
             }
-
-        } catch (error) {
-            // Don't spam console on every move
+        } else {
+            this.currentSnapResult = null;
+            this.hidePreview();
+            this.clearTrackHighlights();
         }
     }
 
     /**
      * Handle pointer down during placement
-     * Completes placement if over valid track position
      */
-    private onPointerDown(evt: PointerEvent): void {
-        try {
-            // Only respond to left click
-            if (evt.button !== 0) {
-                return;
+    private handlePlacementPointerDown(evt: PointerEvent): void {
+        if (!this.isPlacing) return;
+
+        // Only handle left click
+        if (evt.button !== 0) return;
+
+        // Stop event propagation so InputManager doesn't get it
+        evt.stopPropagation();
+        evt.preventDefault();
+
+        if (this.currentSnapResult && this.currentSnapResult.isValid) {
+            console.log(`${LOG_PREFIX} Placement confirmed`);
+
+            // Call callback with result
+            if (this.placementCallback) {
+                this.placementCallback(this.currentSnapResult);
             }
 
-            if (this.currentSnapResult && this.currentSnapResult.isValid) {
-                // Valid placement - complete
-                console.log(`${LOG_PREFIX} Placement confirmed at (${this.currentSnapResult.position.x.toFixed(3)}, ${this.currentSnapResult.position.z.toFixed(3)})`);
-                this.endPlacement(this.currentSnapResult);
-            } else if (this.currentSnapResult) {
-                // Over track but too far from centerline
-                console.log(`${LOG_PREFIX} Invalid placement - too far from track centerline`);
-            } else {
-                // Not over any track
-                console.log(`${LOG_PREFIX} No track at click position`);
-            }
-
-        } catch (error) {
-            console.error(`${LOG_PREFIX} Error on pointer down:`, error);
+            this.endPlacement();
+        } else {
+            console.log(`${LOG_PREFIX} Invalid placement location - click closer to track centerline`);
         }
+    }
+
+    // ========================================================================
+    // PREVIEW AND HIGHLIGHTING
+    // ========================================================================
+
+    /**
+     * Update preview indicator position and rotation
+     */
+    private updatePreview(result: TrackPlacementResult): void {
+        if (!this.previewIndicator) return;
+
+        this.previewIndicator.position.copyFrom(result.position);
+        this.previewIndicator.position.y += 0.01; // Slightly above track
+
+        if (result.rotation) {
+            this.previewIndicator.rotationQuaternion = result.rotation.clone();
+        }
+
+        // Color based on validity
+        if (this.previewMaterial) {
+            if (result.isValid) {
+                this.previewMaterial.diffuseColor = new Color3(0, 1, 0);
+                this.previewMaterial.emissiveColor = new Color3(0, 0.5, 0);
+            } else {
+                this.previewMaterial.diffuseColor = new Color3(1, 0.5, 0);
+                this.previewMaterial.emissiveColor = new Color3(0.5, 0.25, 0);
+            }
+        }
+
+        this.previewIndicator.isVisible = true;
     }
 
     /**
-     * Handle key press during placement
-     * ESC cancels placement
+     * Hide preview indicator
      */
-    private onKeyDown(evt: KeyboardEvent): void {
-        try {
-            if (evt.key === 'Escape') {
-                console.log(`${LOG_PREFIX} Placement cancelled by user`);
-                this.cancelPlacement();
-            }
-
-        } catch (error) {
-            console.error(`${LOG_PREFIX} Error on key down:`, error);
+    private hidePreview(): void {
+        if (this.previewIndicator) {
+            this.previewIndicator.isVisible = false;
         }
     }
-
-    // ========================================================================
-    // TRACK HIGHLIGHTING
-    // ========================================================================
 
     /**
      * Highlight a track mesh
-     * @param mesh - Track mesh to highlight
      */
     private highlightTrack(mesh: AbstractMesh): void {
-        try {
-            // Skip if already highlighted
-            if (this.highlightedTracks.includes(mesh)) {
-                return;
+        // Clear previous highlights
+        this.clearTrackHighlights();
+
+        // Find all track meshes in the same piece
+        const parent = mesh.parent;
+        if (parent) {
+            const siblings = parent.getChildMeshes();
+            for (const sibling of siblings) {
+                if (this.isTrackMesh(sibling)) {
+                    // Store original material
+                    this.originalMaterials.set(sibling.uniqueId.toString(), sibling.material);
+
+                    // Apply highlight
+                    // Note: We could blend materials, but for now just track for potential use
+                    this.highlightedTracks.push(sibling);
+                }
             }
-
-            // Clear previous highlight
-            this.clearTrackHighlight();
-
-            // Get parent to highlight entire track piece
-            const parent = mesh.parent;
-            const meshesToHighlight: AbstractMesh[] = [];
-
-            if (parent) {
-                meshesToHighlight.push(...parent.getChildMeshes());
-            } else {
-                meshesToHighlight.push(mesh);
-            }
-
-            // Store original materials and apply highlight
-            for (const m of meshesToHighlight) {
-                this.originalMaterials.set(m.name, m.material);
-                // Don't override material, just store reference
-            }
-
-            this.highlightedTracks = meshesToHighlight;
-
-        } catch (error) {
-            console.error(`${LOG_PREFIX} Error highlighting track:`, error);
         }
     }
 
     /**
-     * Clear track highlighting
+     * Clear track highlights
      */
-    private clearTrackHighlight(): void {
-        try {
-            // Restore original materials
-            for (const mesh of this.highlightedTracks) {
-                const original = this.originalMaterials.get(mesh.name);
-                if (original !== undefined) {
-                    // Material was stored, would restore here if we changed it
-                }
+    private clearTrackHighlights(): void {
+        for (const mesh of this.highlightedTracks) {
+            const originalMaterial = this.originalMaterials.get(mesh.uniqueId.toString());
+            if (originalMaterial) {
+                mesh.material = originalMaterial;
             }
-
-            this.highlightedTracks = [];
-            this.originalMaterials.clear();
-
-        } catch (error) {
-            console.error(`${LOG_PREFIX} Error clearing highlight:`, error);
         }
+
+        this.highlightedTracks = [];
+        this.originalMaterials.clear();
     }
 
     // ========================================================================
@@ -1038,40 +1155,32 @@ export class TrackModelPlacer {
     // ========================================================================
 
     /**
-     * Show an instruction message overlay
-     * @param text - Message text to display
+     * Show instruction message
      */
     private showMessage(text: string): void {
         try {
-            // Create or update message overlay
             if (!this.messageOverlay) {
                 this.messageOverlay = document.createElement('div');
                 this.messageOverlay.id = 'trackPlacerMessage';
                 this.messageOverlay.style.cssText = `
                     position: fixed;
-                    top: 50%;
+                    top: 80px;
                     left: 50%;
-                    transform: translate(-50%, -50%);
-                    background: rgba(0, 0, 0, 0.85);
+                    transform: translateX(-50%);
+                    background: rgba(0, 100, 0, 0.9);
                     color: white;
-                    padding: 20px 30px;
-                    border-radius: 10px;
+                    padding: 12px 24px;
+                    border-radius: 8px;
                     font-family: 'Segoe UI', Arial, sans-serif;
-                    font-size: 16px;
-                    text-align: center;
+                    font-size: 14px;
                     z-index: 10000;
                     pointer-events: none;
-                    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
-                    border: 1px solid rgba(255, 255, 255, 0.2);
+                    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
                 `;
                 document.body.appendChild(this.messageOverlay);
             }
 
-            // Add train icon and message
-            this.messageOverlay.innerHTML = `
-                <div style="font-size: 32px; margin-bottom: 10px;">🚂</div>
-                <div>${text}</div>
-            `;
+            this.messageOverlay.textContent = text;
             this.messageOverlay.style.display = 'block';
 
         } catch (error) {
@@ -1080,7 +1189,7 @@ export class TrackModelPlacer {
     }
 
     /**
-     * Hide the message overlay
+     * Hide instruction message
      */
     private hideMessage(): void {
         try {
@@ -1130,6 +1239,9 @@ export class TrackModelPlacer {
                 this.messageOverlay = null;
             }
 
+            // Clear references
+            this.trackGraph = null;
+
             console.log(`${LOG_PREFIX} ✓ Disposed`);
 
         } catch (error) {
@@ -1139,23 +1251,56 @@ export class TrackModelPlacer {
 }
 
 // ============================================================================
-// UTILITY FUNCTION FOR TESTING ORIENTATION
+// UTILITY FUNCTIONS
 // ============================================================================
 
 /**
- * Test different model forward axes to find the correct one
- * Call this from browser console if trains are still facing wrong way
+ * Register orientation testing utilities on window
+ * Call this from browser console if trains are facing wrong way
  * 
  * Usage:
- *   window.testTrainOrientation('POS_X');
- *   window.testTrainOrientation('NEG_Y');
- *   etc.
+ *   window.setTrainOrientation('NEG_Y')  // For Blender exports
+ *   window.setTrainOrientation('POS_X')  // For some CAD exports
+ *   window.trainOrientationHelp()        // Show all options
  */
 export function registerOrientationTester(placer: TrackModelPlacer): void {
-    (window as any).testTrainOrientation = (axis: ModelForwardAxis) => {
-        console.log(`[TrackModelPlacer] Testing orientation with forward axis: ${axis}`);
+    // Set orientation
+    (window as any).setTrainOrientation = (axis: ModelForwardAxis) => {
+        console.log(`${LOG_PREFIX} Setting model forward axis: ${axis}`);
         placer.setModelForwardAxis(axis);
-        console.log(`[TrackModelPlacer] Now place a train on the track to test.`);
-        console.log(`[TrackModelPlacer] If still wrong, try: POS_X, NEG_X, POS_Y, NEG_Y, POS_Z, NEG_Z`);
+        console.log(`${LOG_PREFIX} ✓ Orientation set. Place a train to test.`);
     };
+
+    // Help function
+    (window as any).trainOrientationHelp = () => {
+        console.log('');
+        console.log('╔════════════════════════════════════════════════════════════╗');
+        console.log('║               TRAIN ORIENTATION HELP                       ║');
+        console.log('╠════════════════════════════════════════════════════════════╣');
+        console.log('║  If your train faces sideways or backwards on track:       ║');
+        console.log('║                                                            ║');
+        console.log('║  window.setTrainOrientation("POS_Z")  → Faces +Z (default) ║');
+        console.log('║  window.setTrainOrientation("NEG_Z")  → Faces -Z           ║');
+        console.log('║  window.setTrainOrientation("POS_X")  → Faces +X           ║');
+        console.log('║  window.setTrainOrientation("NEG_X")  → Faces -X           ║');
+        console.log('║  window.setTrainOrientation("POS_Y")  → Faces +Y           ║');
+        console.log('║  window.setTrainOrientation("NEG_Y")  → Faces -Y (Blender) ║');
+        console.log('╠════════════════════════════════════════════════════════════╣');
+        console.log('║  Common model conventions:                                 ║');
+        console.log('║  - Blender default: NEG_Y forward, Z up                    ║');
+        console.log('║  - 3ds Max: POS_Y forward, Z up                            ║');
+        console.log('║  - Unity/Unreal: POS_Z forward                             ║');
+        console.log('╚════════════════════════════════════════════════════════════╝');
+        console.log('');
+    };
+
+    // Get current orientation
+    (window as any).getTrainOrientation = () => {
+        const axis = placer.getModelForwardAxis();
+        console.log(`${LOG_PREFIX} Current model forward axis: ${axis}`);
+        return axis;
+    };
+
+    console.log(`${LOG_PREFIX} ✓ Orientation utilities registered`);
+    console.log(`${LOG_PREFIX}   Use window.trainOrientationHelp() for options`);
 }

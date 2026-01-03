@@ -465,6 +465,14 @@ export class TrainPhysics {
     }
 
     /**
+     * Get current speed in meters per second (alias)
+     * @returns Current speed (always positive)
+     */
+    getCurrentSpeed(): number {
+        return this.currentSpeed;
+    }
+
+    /**
      * Get current speed as percentage of max
      * @returns Speed percentage (0-100)
      */

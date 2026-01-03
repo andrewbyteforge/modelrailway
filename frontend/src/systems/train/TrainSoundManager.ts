@@ -306,6 +306,14 @@ export class TrainSoundManager {
     }
 
     /**
+     * Update engine sound based on speed (alias for updateMovementSound)
+     * @param speedPercent - Current speed as percentage (0-100)
+     */
+    updateEngineSound(speedPercent: number): void {
+        this.updateMovementSound(speedPercent);
+    }
+
+    /**
      * Start the movement sound generator
      */
     private async startMovementSound(): Promise<void> {

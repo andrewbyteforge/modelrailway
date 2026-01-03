@@ -314,12 +314,21 @@ export class TrainSystem {
     // ========================================================================
 
     /**
-     * Update all trains (call each frame)
-     * @param deltaTime - Time since last frame in seconds
-     */
+    * Update all trains (called from render loop)
+    * @param deltaTime - Time since last frame in seconds
+    */
     update(deltaTime: number): void {
-        for (const train of this.trains.values()) {
-            train.update(deltaTime);
+        // Skip if no trains
+        if (this.trains.size === 0) return;
+
+        // TEMPORARY DEBUG
+        
+
+        // Update each train
+        for (const [id, controller] of this.trains) {
+            
+            controller.update(deltaTime);
+            alert(`Train ${id} update complete`);
         }
     }
 
@@ -333,18 +342,38 @@ export class TrainSystem {
      * @param info - Train information
      * @returns The created TrainController
      */
+    // ========================================================================
+    // TRAIN MANAGEMENT
+    // ========================================================================
+
+    /**
+     * Add a train to the system
+     * @param rootNode - Root transform node of the train model
+     * @param info - Train information
+     * @returns The created TrainController
+     */
+    /**
+         * Add a train to the system
+         * @param rootNode - Root transform node of the train model
+         * @param info - Train information
+         * @returns The created TrainController
+         */
     addTrain(
         rootNode: TransformNode,
         info: Partial<TrainInfo>
     ): TrainController {
+        console.log('[TrainSystem] DEBUG: Step 1 - addTrain called');
+
         // Generate ID if not provided
         const trainId = info.id || `train-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+        console.log(`[TrainSystem] DEBUG: Step 2 - trainId: ${trainId}`);
 
         // Check for duplicate
         if (this.trains.has(trainId)) {
             console.warn(`${LOG_PREFIX} Train ${trainId} already exists, removing old one`);
             this.removeTrain(trainId);
         }
+        console.log('[TrainSystem] DEBUG: Step 3 - duplicate check done');
 
         // Build the train info object
         const trainInfo: TrainInfo = {
@@ -353,9 +382,11 @@ export class TrainSystem {
             category: info.category || 'locomotive',
             libraryEntryId: info.libraryEntryId
         };
+        console.log(`[TrainSystem] DEBUG: Step 4 - trainInfo built: ${trainInfo.name}`);
 
-        // Create controller with CORRECT parameter order:
-        // 1. scene, 2. graph, 3. pointsManager, 4. rootNode, 5. info, 6. config (optional)
+        // Create TrainController
+        console.log('[TrainSystem] DEBUG: Step 5 - About to create TrainController...');
+
         const controller = new TrainController(
             this.scene,
             this.graph,
@@ -364,17 +395,27 @@ export class TrainSystem {
             trainInfo
         );
 
+        alert('addTrain: Step A - controller created');
+
         // Store reference
         this.trains.set(trainId, controller);
+
+        alert('addTrain: Step B - stored in map');
 
         // Subscribe to selection events
         controller.onSelected.add(() => this.handleTrainSelected(controller));
         controller.onDeselected.add(() => this.handleTrainDeselected(controller));
 
+        alert('addTrain: Step C - subscribed to events');
+
         // Notify observers
         this.onTrainAdded.notifyObservers(controller);
 
+        alert('addTrain: Step D - notified observers');
+
         console.log(`${LOG_PREFIX} Added train: ${trainId} (${info.name})`);
+
+        alert('addTrain: Step E - COMPLETE, about to return');
 
         return controller;
     }
@@ -387,6 +428,14 @@ export class TrainSystem {
      * @param t - Optional position along edge (0-1)
      * @returns TrainController if successful
      */
+    /**
+       * Register an existing model as a train
+       * @param rootNode - The model's root node
+       * @param name - Display name for the train
+       * @param edgeId - Optional edge ID to place on
+       * @param t - Optional position along edge (0-1)
+       * @returns TrainController if successful
+       */
     registerExistingModel(
         rootNode: TransformNode,
         name: string,
@@ -394,10 +443,13 @@ export class TrainSystem {
         t: number = 0.5
     ): TrainController | null {
         try {
+            alert('registerExistingModel: Step 1 - start');
+
             // If no edge specified, try to find one near the model
             let targetEdgeId = edgeId;
 
             if (!targetEdgeId) {
+                alert('registerExistingModel: Step 2 - finding edge');
                 const edgeFinder = new TrackEdgeFinder(this.graph);
                 const position = rootNode.getAbsolutePosition
                     ? rootNode.getAbsolutePosition()
@@ -407,11 +459,14 @@ export class TrainSystem {
 
                 if (result) {
                     targetEdgeId = result.edge.id;
+                    alert(`registerExistingModel: Step 3 - found edge: ${targetEdgeId}`);
                 } else {
+                    alert('registerExistingModel: Step 3 - no edge found');
                     console.warn(`${LOG_PREFIX} Model "${name}" not near any track`);
-                    // Still register but won't be able to move on track
                 }
             }
+
+            alert('registerExistingModel: Step 4 - about to call addTrain');
 
             // Create controller
             const controller = this.addTrain(rootNode, {
@@ -419,11 +474,16 @@ export class TrainSystem {
                 category: 'locomotive'
             });
 
+            alert('registerExistingModel: Step 5 - addTrain returned');
+
             // Place on track if we found an edge
             if (targetEdgeId) {
+                alert(`registerExistingModel: Step 6 - about to placeOnEdge: ${targetEdgeId}`);
                 controller.placeOnEdge(targetEdgeId, t, 1);
+                alert('registerExistingModel: Step 7 - placeOnEdge done');
             }
 
+            alert('registerExistingModel: Step 8 - COMPLETE');
             return controller;
         } catch (error) {
             console.error(`${LOG_PREFIX} Failed to register model:`, error);

@@ -29,6 +29,9 @@ import { TrainSoundManager } from './TrainSoundManager';
 import type { TrackGraph } from '../track/TrackGraph';
 import type { PointsManager } from './PointsManager';
 
+
+console.log('[TrainController] FILE LOADED - this proves the file is being used');
+
 // ============================================================================
 // CONSTANTS
 // ============================================================================
@@ -188,15 +191,16 @@ export class TrainController {
     // CONSTRUCTOR
     // ========================================================================
 
+
     /**
-     * Create a new TrainController
-     * @param scene - Babylon scene
-     * @param graph - Track graph
-     * @param pointsManager - Points manager for route decisions
-     * @param rootNode - Root transform/mesh of the train model
-     * @param info - Train identification info
-     * @param config - Optional configuration
-     */
+      * Create a new TrainController
+      * @param scene - Babylon scene
+      * @param graph - Track graph
+      * @param pointsManager - Points manager for route decisions
+      * @param rootNode - Root transform/mesh of the train model
+      * @param info - Train identification info
+      * @param config - Optional configuration
+      */
     constructor(
         scene: Scene,
         graph: TrackGraph,
@@ -205,41 +209,46 @@ export class TrainController {
         info: TrainInfo,
         config?: Partial<TrainControllerConfig>
     ) {
+        alert('TrainController constructor - Step 1');
+
         this.scene = scene;
         this.info = info;
         this.rootNode = rootNode;
 
-        // Apply default config
+        alert('TrainController constructor - Step 2: basic done');
+
         this.config = {
             enableSound: true,
             modelYOffset: 0,
             ...config
         };
 
-        // Initialize physics
+        alert('TrainController constructor - Step 3: config done, about to create TrainPhysics');
+
         this.physics = new TrainPhysics(config?.physicsConfig);
 
-        // Initialize path follower
+        alert('TrainController constructor - Step 4: TrainPhysics done, about to create TrainPathFollower');
+
         this.pathFollower = new TrainPathFollower(graph, pointsManager, {
             heightOffset: this.config.modelYOffset
         });
 
-        // Initialize sound manager if enabled
+        alert('TrainController constructor - Step 5: TrainPathFollower done');
+
         if (this.config.enableSound) {
             this.soundManager = new TrainSoundManager(scene);
         }
 
-        // Collect all meshes from the model (with robust handling)
+        alert('TrainController constructor - Step 6: Sound done, about to collectMeshes');
+
         this.collectMeshes();
 
-        // Setup materials
-        this.setupMaterials();
+        alert('TrainController constructor - Step 7: collectMeshes done');
 
-        // Make meshes pickable
+        this.setupMaterials();
         this.setupPickable();
 
-        console.log(`${LOG_PREFIX} Created controller for ${info.name} (${info.id})`);
-        console.log(`${LOG_PREFIX}   Collected ${this.meshes.length} meshes`);
+        alert('TrainController constructor - COMPLETE');
     }
 
     // ========================================================================
