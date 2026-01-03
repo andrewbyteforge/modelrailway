@@ -34,10 +34,10 @@ import {
     OO_GAUGE
 } from './RollingStockPositioner';
 import { ModelAxisDetector, detectModelForwardAxis } from './ModelAxisDetector';
-import { TrackPathHelper, getTrackPathHelper } from './TrackPathHelper';
-import type { TrackGraph } from '../track/TrackGraph';
-import type { TrainSystem } from './TrainSystem';
-import type { TrainController } from './TrainController';
+import { TrackPathHelper, getTrackPathHelper } from '../track/TrackPathHelper';
+import type { TrackGraph } from '../../track/TrackGraph';
+import type { TrainSystem } from '../core/TrainSystem';
+import type { TrainController } from '../core/TrainController';
 
 // ============================================================================
 // SECTION 1: BASIC SETUP

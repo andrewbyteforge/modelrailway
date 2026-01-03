@@ -25,17 +25,17 @@ import { AbstractMesh } from '@babylonjs/core/Meshes/abstractMesh';
 import { PointerEventTypes } from '@babylonjs/core/Events/pointerEvents';
 import { Observable } from '@babylonjs/core/Misc/observable';
 
-import { TrackSystem } from '../track/TrackSystem';
-import { TrackGraph } from '../track/TrackGraph';
-import { TrackEdgeFinder } from './TrackEdgeFinder';
+import { TrackSystem } from '../../track/TrackSystem';
+import { TrackGraph } from '../../track/TrackGraph';
+import { TrackEdgeFinder } from '../track/TrackEdgeFinder';
 import { TrainController, type TrainInfo } from './TrainController';
-import { PointsManager, type PointData, type PointChangeEvent } from './PointsManager';
-import { TrainSoundManager } from './TrainSoundManager';
+import { PointsManager, type PointData, type PointChangeEvent } from '../track/PointsManager';
+import { TrainSoundManager } from '../utilities/TrainSoundManager';
 import {
     showTrainSelectionModal,
     isTrainSelectionModalOpen,
     type TrainSelectionResult
-} from '../../ui/TrainSelectionModal';
+} from '../../../ui/TrainSelectionModal';
 
 // ============================================================================
 // CONSTANTS
@@ -189,11 +189,17 @@ export class TrainSystem {
     /** Emitted when a point state changes */
     public onPointChanged: Observable<PointChangeEvent> = new Observable();
 
-    /** 
+    /**
      * Emitted when user wants to reposition a train (from modal)
      * External systems (like ModelImportButton) should subscribe to this
      */
     public onRepositionRequested: Observable<TrainRepositionRequest> = new Observable();
+
+    /**
+     * Emitted when user chooses to drive a train (from modal)
+     * TrainControlPanel should subscribe to this to show driving controls
+     */
+    public onDriveModeActivated: Observable<TrainController> = new Observable();
 
     // ========================================================================
     // CONSTRUCTOR
@@ -321,14 +327,9 @@ export class TrainSystem {
         // Skip if no trains
         if (this.trains.size === 0) return;
 
-        // TEMPORARY DEBUG
-        
-
         // Update each train
         for (const [id, controller] of this.trains) {
-            
             controller.update(deltaTime);
-            alert(`Train ${id} update complete`);
         }
     }
 
@@ -342,38 +343,18 @@ export class TrainSystem {
      * @param info - Train information
      * @returns The created TrainController
      */
-    // ========================================================================
-    // TRAIN MANAGEMENT
-    // ========================================================================
-
-    /**
-     * Add a train to the system
-     * @param rootNode - Root transform node of the train model
-     * @param info - Train information
-     * @returns The created TrainController
-     */
-    /**
-         * Add a train to the system
-         * @param rootNode - Root transform node of the train model
-         * @param info - Train information
-         * @returns The created TrainController
-         */
     addTrain(
         rootNode: TransformNode,
         info: Partial<TrainInfo>
     ): TrainController {
-        console.log('[TrainSystem] DEBUG: Step 1 - addTrain called');
-
         // Generate ID if not provided
         const trainId = info.id || `train-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-        console.log(`[TrainSystem] DEBUG: Step 2 - trainId: ${trainId}`);
 
         // Check for duplicate
         if (this.trains.has(trainId)) {
             console.warn(`${LOG_PREFIX} Train ${trainId} already exists, removing old one`);
             this.removeTrain(trainId);
         }
-        console.log('[TrainSystem] DEBUG: Step 3 - duplicate check done');
 
         // Build the train info object
         const trainInfo: TrainInfo = {
@@ -382,11 +363,8 @@ export class TrainSystem {
             category: info.category || 'locomotive',
             libraryEntryId: info.libraryEntryId
         };
-        console.log(`[TrainSystem] DEBUG: Step 4 - trainInfo built: ${trainInfo.name}`);
 
         // Create TrainController
-        console.log('[TrainSystem] DEBUG: Step 5 - About to create TrainController...');
-
         const controller = new TrainController(
             this.scene,
             this.graph,
@@ -395,27 +373,17 @@ export class TrainSystem {
             trainInfo
         );
 
-        alert('addTrain: Step A - controller created');
-
         // Store reference
         this.trains.set(trainId, controller);
-
-        alert('addTrain: Step B - stored in map');
 
         // Subscribe to selection events
         controller.onSelected.add(() => this.handleTrainSelected(controller));
         controller.onDeselected.add(() => this.handleTrainDeselected(controller));
 
-        alert('addTrain: Step C - subscribed to events');
-
         // Notify observers
         this.onTrainAdded.notifyObservers(controller);
 
-        alert('addTrain: Step D - notified observers');
-
         console.log(`${LOG_PREFIX} Added train: ${trainId} (${info.name})`);
-
-        alert('addTrain: Step E - COMPLETE, about to return');
 
         return controller;
     }
@@ -427,15 +395,14 @@ export class TrainSystem {
      * @param edgeId - Optional edge ID to place on
      * @param t - Optional position along edge (0-1)
      * @returns TrainController if successful
-     */
     /**
-       * Register an existing model as a train
-       * @param rootNode - The model's root node
-       * @param name - Display name for the train
-       * @param edgeId - Optional edge ID to place on
-       * @param t - Optional position along edge (0-1)
-       * @returns TrainController if successful
-       */
+     * Register an existing model as a train
+     * @param rootNode - The model's root node
+     * @param name - Display name for the train
+     * @param edgeId - Optional edge ID to place on
+     * @param t - Optional position along edge (0-1)
+     * @returns TrainController if successful
+     */
     registerExistingModel(
         rootNode: TransformNode,
         name: string,
@@ -443,13 +410,10 @@ export class TrainSystem {
         t: number = 0.5
     ): TrainController | null {
         try {
-            alert('registerExistingModel: Step 1 - start');
-
             // If no edge specified, try to find one near the model
             let targetEdgeId = edgeId;
 
             if (!targetEdgeId) {
-                alert('registerExistingModel: Step 2 - finding edge');
                 const edgeFinder = new TrackEdgeFinder(this.graph);
                 const position = rootNode.getAbsolutePosition
                     ? rootNode.getAbsolutePosition()
@@ -459,14 +423,11 @@ export class TrainSystem {
 
                 if (result) {
                     targetEdgeId = result.edge.id;
-                    alert(`registerExistingModel: Step 3 - found edge: ${targetEdgeId}`);
+                    console.log(`${LOG_PREFIX} Found nearby edge: ${targetEdgeId}`);
                 } else {
-                    alert('registerExistingModel: Step 3 - no edge found');
                     console.warn(`${LOG_PREFIX} Model "${name}" not near any track`);
                 }
             }
-
-            alert('registerExistingModel: Step 4 - about to call addTrain');
 
             // Create controller
             const controller = this.addTrain(rootNode, {
@@ -474,16 +435,12 @@ export class TrainSystem {
                 category: 'locomotive'
             });
 
-            alert('registerExistingModel: Step 5 - addTrain returned');
-
             // Place on track if we found an edge
             if (targetEdgeId) {
-                alert(`registerExistingModel: Step 6 - about to placeOnEdge: ${targetEdgeId}`);
                 controller.placeOnEdge(targetEdgeId, t, 1);
-                alert('registerExistingModel: Step 7 - placeOnEdge done');
+                console.log(`${LOG_PREFIX} Placed train on edge: ${targetEdgeId}`);
             }
 
-            alert('registerExistingModel: Step 8 - COMPLETE');
             return controller;
         } catch (error) {
             console.error(`${LOG_PREFIX} Failed to register model:`, error);
@@ -800,7 +757,7 @@ export class TrainSystem {
             // Emergency stop
             else if (this.keyboardControls.emergencyStop.includes(key)) {
                 event.preventDefault();
-                this.selectedTrain.emergencyStop();
+                this.selectedTrain.emergencyBrake();
             }
         }
     }
@@ -848,6 +805,9 @@ export class TrainSystem {
      *   - Lift & Move (reposition the train)
      *   - Drive (select for keyboard control)
      * 
+     * UPDATED v2.1.0: Skip modal if train is already selected for driving
+     * or if reposition mode was just requested
+     * 
      * @param pointerInfo - Pointer event info
      */
     private handlePointerDown(pointerInfo: any): void {
@@ -868,6 +828,34 @@ export class TrainSystem {
         const trainController = this.findTrainFromMesh(mesh);
         if (trainController) {
             const trainInfo = trainController.getInfo();
+
+            // ----------------------------------------------------------------
+            // v2.1.0: Skip modal if train is already selected for driving
+            // This allows continuous control without modal interruption
+            // ----------------------------------------------------------------
+            if (this.selectedTrain === trainController) {
+                console.log(`${LOG_PREFIX} Train "${trainInfo.name}" already selected - continuing drive mode`);
+                return;
+            }
+
+            // ----------------------------------------------------------------
+            // v2.1.1: Skip modal if reposition mode is active
+            // This allows the drag operation to proceed without interruption
+            // Check is simplified to just the flag - ID matching was too strict
+            // ----------------------------------------------------------------
+            if ((window as any).__trainRepositionRequested) {
+                console.log(`${LOG_PREFIX} Reposition mode active - allowing drag for "${trainInfo.name}"`);
+                return;
+            }
+
+            // ----------------------------------------------------------------
+            // v2.1.1: Skip modal if ModelSelectionHandler is in reposition mode
+            // This flag is set when user selects "Reposition" from TrainOptionsMenu
+            // ----------------------------------------------------------------
+            if ((window as any).__modelRepositionMode) {
+                console.log(`${LOG_PREFIX} Model reposition mode active - skipping modal for "${trainInfo.name}"`);
+                return;
+            }
 
             console.log(`${LOG_PREFIX} Train clicked: "${trainInfo.name}" - showing selection modal`);
 
@@ -939,6 +927,9 @@ export class TrainSystem {
                 // Set window flags for other systems
                 (window as any).__trainSelected = true;
                 (window as any).__selectedTrainId = controller.getId();
+
+                // Emit drive mode event so TrainControlPanel shows
+                this.onDriveModeActivated.notifyObservers(controller);
                 break;
 
             case 'move':
@@ -946,8 +937,28 @@ export class TrainSystem {
                 console.log(`${LOG_PREFIX} Requesting reposition for "${result.trainName}"`);
 
                 // Set a window flag that ModelImportButton can check
+                // Keep this flag active longer so user has time to click and drag
                 (window as any).__trainRepositionRequested = true;
                 (window as any).__trainToReposition = result.trainId;
+
+                // Get the model ID from the controller's node
+                const modelNode = controller.getNode();
+                const modelId = (modelNode as any).__modelId ||
+                    (modelNode as any).metadata?.modelId ||
+                    modelNode.name;
+
+                console.log(`${LOG_PREFIX} Model ID for reposition: ${modelId}`);
+
+                // Dispatch custom event for ModelSelectionHandler to enable drag mode
+                // This bridges TrainSystem and ModelSelectionHandler without tight coupling
+                window.dispatchEvent(new CustomEvent('trainRepositionRequested', {
+                    detail: {
+                        modelId: modelId,
+                        trainId: result.trainId,
+                        trainName: result.trainName,
+                        node: modelNode
+                    }
+                }));
 
                 // Notify observers (like ModelImportButton)
                 this.onRepositionRequested.notifyObservers({
@@ -956,11 +967,12 @@ export class TrainSystem {
                     controller: controller
                 });
 
-                // Clear the flag after a short delay
+                // Clear the flag after 5 seconds (enough time to start dragging)
+                // The flag will also be cleared when the user clicks elsewhere
                 setTimeout(() => {
                     (window as any).__trainRepositionRequested = false;
                     (window as any).__trainToReposition = null;
-                }, 100);
+                }, 5000);
                 break;
 
             case 'cancel':

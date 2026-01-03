@@ -27,7 +27,7 @@ export {
     type PendingVehicle,
     type PlacementCompleteEvent,
     type PlacementCancelledEvent
-} from '../RollingStockPositioner';
+} from '../rolling-stock/RollingStockPositioner';
 
 // ============================================================================
 // MODEL ANALYSIS
@@ -39,7 +39,7 @@ export {
     detectModelForwardAxis,
     type ForwardAxis,
     type ModelAnalysis
-} from '../ModelAxisDetector';
+} from '../rolling-stock/ModelAxisDetector';
 
 // ============================================================================
 // TRACK PATH UTILITIES
@@ -52,7 +52,7 @@ export {
     type TrackPoint,
     type ClosestPointResult,
     type TrackPath
-} from '../TrackPathHelper';
+} from '../track/TrackPathHelper';
 
 // ============================================================================
 // INTEGRATION HELPERS
@@ -71,4 +71,4 @@ export {
     debugListAllEdges,
     detectCategoryFromFilename,
     extractDisplayName
-} from '../RollingStockPlacement.integration';
+} from '../rolling-stock/RollingStockPlacement.integration';

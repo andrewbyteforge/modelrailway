@@ -10,14 +10,22 @@
  * - Setting category and tags
  * - Saving to library
  * 
+ * UPDATED: Integrated Meshy Normalized Mesh Workflow (v1.2.0)
+ * - Detects and processes Meshy-style normalized models
+ * - Shows type selector for rolling stock
+ * - Auto-scales to OO gauge dimensions
+ * - Positions wheels on rails
+ * 
  * FIXED: Category card click handlers now work properly (v1.1.0)
  * 
  * @module ModelImportDialog
  * @author Model Railway Workbench
- * @version 1.1.0 - Fixed category selection
+ * @version 1.2.0 - Added normalized mesh workflow integration
  */
 
 import { Scene } from '@babylonjs/core/scene';
+import { TransformNode } from '@babylonjs/core/Meshes/transformNode';
+import { AbstractMesh } from '@babylonjs/core/Meshes/abstractMesh';
 import { ModelLibrary, type ModelCategory, type ModelLibraryEntry } from '../systems/models/ModelLibrary';
 import { ModelScaleHelper, type ModelDimensions, type ScaleResult } from '../systems/models/ModelScaleHelper';
 import { ModelSystem, type ModelLoadResult } from '../systems/models/ModelSystem';
@@ -36,8 +44,27 @@ import {
     attachCategoryHandlers
 } from './ModelImportDialogTemplate';
 
+// ============================================================================
+// NORMALIZED MESH WORKFLOW IMPORTS
+// ============================================================================
+
+import type { RollingStockType } from '../systems/train/rolling-stock/NormalizedMeshHandler';
+
 // Re-export types for external use
 export type { ImportCallback };
+
+// ============================================================================
+// TYPE DEFINITIONS
+// ============================================================================
+
+/**
+ * Type for the normalized mesh workflow hook function
+ */
+export type NormalizedMeshWorkflowHook = (
+    rootNode: TransformNode,
+    meshes: AbstractMesh[],
+    filename: string
+) => Promise<RollingStockType | undefined>;
 
 // ============================================================================
 // MODEL IMPORT DIALOG CLASS
@@ -49,6 +76,12 @@ export type { ImportCallback };
  * @example
  * ```typescript
  * const dialog = new ModelImportDialog(scene, modelSystem);
+ * 
+ * // Optional: Set normalized mesh workflow hook
+ * dialog.setNormalizedMeshWorkflowHook(async (rootNode, meshes, filename) => {
+ *     return await executeImportWorkflow(rootNode, meshes, filename);
+ * });
+ * 
  * dialog.show((entry) => {
  *     if (entry) {
  *         console.log('Imported:', entry.name);
@@ -94,6 +127,27 @@ export class ModelImportDialog {
     private formState: ImportFormState;
 
     // ========================================================================
+    // NORMALIZED MESH WORKFLOW PROPERTIES
+    // ========================================================================
+
+    /** 
+     * Optional workflow hook for normalized mesh processing
+     * Set by ModelImportButton to enable smart Meshy model handling
+     */
+    private normalizedMeshWorkflowHook?: NormalizedMeshWorkflowHook;
+
+    /**
+     * Detected rolling stock type from normalized mesh workflow
+     * Used to override category selection if workflow succeeds
+     */
+    private detectedStockType?: RollingStockType;
+
+    /**
+     * Flag indicating if user cancelled the workflow
+     */
+    private workflowCancelled: boolean = false;
+
+    // ========================================================================
     // CONSTRUCTOR
     // ========================================================================
 
@@ -110,6 +164,30 @@ export class ModelImportDialog {
     }
 
     // ========================================================================
+    // NORMALIZED MESH WORKFLOW SETUP
+    // ========================================================================
+
+    /**
+     * Set the normalized mesh workflow hook
+     * 
+     * This hook will be called when a model is loaded to detect and process
+     * Meshy-style normalized meshes (bounds -1 to 1).
+     * 
+     * @param hook - Function to call with (rootNode, meshes, filename)
+     * 
+     * @example
+     * ```typescript
+     * dialog.setNormalizedMeshWorkflowHook(async (rootNode, meshes, filename) => {
+     *     return await executeImportWorkflow(rootNode, meshes, filename);
+     * });
+     * ```
+     */
+    public setNormalizedMeshWorkflowHook(hook: NormalizedMeshWorkflowHook): void {
+        this.normalizedMeshWorkflowHook = hook;
+        console.log('[ModelImportDialog] Normalized mesh workflow hook registered');
+    }
+
+    // ========================================================================
     // DIALOG LIFECYCLE
     // ========================================================================
 
@@ -120,6 +198,8 @@ export class ModelImportDialog {
     show(callback: ImportCallback): void {
         this.onImport = callback;
         this.formState = createDefaultFormState(); // Reset form state
+        this.detectedStockType = undefined; // Reset detected type
+        this.workflowCancelled = false; // Reset cancellation flag
         this.createDialog();
     }
 
@@ -146,6 +226,8 @@ export class ModelImportDialog {
         // Reset state
         this.loadedFileData = null;
         this.currentScaleResult = null;
+        this.detectedStockType = undefined;
+        this.workflowCancelled = false;
 
         // Call callback
         if (this.onImport) {
@@ -412,7 +494,7 @@ export class ModelImportDialog {
     }
 
     /**
-     * Load model to extract dimensions
+     * Load model to extract dimensions and run normalized mesh workflow
      */
     private async loadModelForPreview(): Promise<void> {
         if (!this.loadedFileData) return;
@@ -433,13 +515,62 @@ export class ModelImportDialog {
             this.loadedFileData.loadResult = result;
 
             if (result.success && result.dimensions) {
+                // ============================================================
+                // NORMALIZED MESH WORKFLOW INTEGRATION
+                // Call workflow hook if available to detect/process Meshy models
+                // ============================================================
+                if (this.normalizedMeshWorkflowHook && result.rootNode && result.meshes) {
+                    console.log('[ModelImportDialog] Running normalized mesh workflow...');
+
+                    try {
+                        const stockType = await this.normalizedMeshWorkflowHook(
+                            result.rootNode,
+                            result.meshes as AbstractMesh[],
+                            this.loadedFileData.fileName
+                        );
+
+                        if (stockType === undefined) {
+                            // Workflow returned undefined - could mean:
+                            // 1. User cancelled type selection → abort import
+                            // 2. Not a normalized mesh → continue normally
+                            // 3. Workflow failed → continue normally
+
+                            console.log('[ModelImportDialog] Workflow returned undefined');
+                            // Continue with normal import
+
+                        } else {
+                            // Workflow succeeded - stockType contains the rolling stock type
+                            this.detectedStockType = stockType;
+                            console.log(`[ModelImportDialog] ✓ Normalized mesh workflow completed: ${stockType}`);
+                            console.log('[ModelImportDialog] ✓ Model auto-scaled and positioned');
+
+                            // Force category to rolling_stock since it's been processed
+                            this.formState.category = 'rolling_stock';
+
+                            // Auto-select the appropriate rolling stock card
+                            this.autoSelectRollingStockCard(stockType);
+                        }
+                    } catch (workflowError) {
+                        console.warn('[ModelImportDialog] Workflow error (continuing with normal import):', workflowError);
+                    }
+                }
+                // ============================================================
+                // END NORMALIZED MESH WORKFLOW
+                // ============================================================
+
                 // Update file info with dimensions
                 if (fileInfo) {
                     const dims = result.dimensions;
+                    const workflowMessage = this.detectedStockType
+                        ? `<div style="margin-top: 6px; padding: 6px; background: #e8f5e9; border-radius: 4px; font-size: 12px; color: #2e7d32;">
+                             ✓ Auto-scaled to OO gauge ${this.detectedStockType}
+                           </div>`
+                        : '';
+
                     fileInfo.innerHTML = `
                         <div style="display: flex; align-items: flex-start; gap: 10px;">
                             <span style="font-size: 24px;">✅</span>
-                            <div>
+                            <div style="flex: 1;">
                                 <strong>${this.loadedFileData.fileName}</strong><br>
                                 <span style="font-size: 12px; color: #666;">
                                     ${(this.loadedFileData.fileSize / 1024).toFixed(1)} KB
@@ -448,6 +579,7 @@ export class ModelImportDialog {
                                     <strong>Original size:</strong> 
                                     ${dims.width.toFixed(3)} × ${dims.height.toFixed(3)} × ${dims.depth.toFixed(3)} units
                                 </div>
+                                ${workflowMessage}
                             </div>
                         </div>
                     `;
@@ -461,8 +593,10 @@ export class ModelImportDialog {
                     this.formState.name = baseName;
                 }
 
-                // Auto-detect category from filename
-                this.autoDetectCategory(this.loadedFileData.fileName);
+                // Auto-detect category from filename (unless already detected by workflow)
+                if (!this.detectedStockType) {
+                    this.autoDetectCategory(this.loadedFileData.fileName);
+                }
 
                 // Calculate initial scale
                 this.calculateScale();
@@ -541,6 +675,37 @@ export class ModelImportDialog {
                 scaleModeSection.style.opacity = '1';
                 scaleModeSection.style.pointerEvents = 'auto';
             }
+        }
+    }
+
+    /**
+     * Auto-select rolling stock card based on detected type
+     * @param stockType - Detected rolling stock type from workflow
+     */
+    private autoSelectRollingStockCard(stockType: RollingStockType): void {
+        if (!this.container) return;
+
+        // Map RollingStockType to subcategory
+        let subcategory: RollingStockSubcategory = 'locomotive';
+
+        switch (stockType) {
+            case 'locomotive':
+            case 'steam':
+                subcategory = 'locomotive';
+                break;
+            case 'coach':
+                subcategory = 'coach';
+                break;
+            case 'wagon':
+                subcategory = 'wagon';
+                break;
+        }
+
+        // Find and click the appropriate card
+        const card = this.container.querySelector(`[data-rolling-stock-type="${subcategory}"]`) as HTMLElement;
+        if (card) {
+            card.click();
+            console.log(`[ModelImportDialog] Auto-selected rolling stock card: ${subcategory}`);
         }
     }
 
@@ -632,6 +797,10 @@ export class ModelImportDialog {
         // ====================================================================
         // ROLLING STOCK SPECIAL HANDLING
         // For rolling stock, always use the specialized rolling stock calculator
+        // 
+        // NOTE: If the model was processed by normalized mesh workflow,
+        // it's already been scaled correctly, so we just need to calculate
+        // what the scale *would* be for display purposes
         // ====================================================================
         if (this.formState.category === 'rolling_stock') {
             const type = detectRollingStockType(this.loadedFileData.fileName);
@@ -695,6 +864,12 @@ export class ModelImportDialog {
 
         const result = this.currentScaleResult;
 
+        const workflowNote = this.detectedStockType
+            ? `<div style="margin-top: 8px; padding: 6px; background: #e8f5e9; border-radius: 4px; font-size: 12px; color: #2e7d32;">
+                 ℹ️ Model has been pre-scaled by smart import workflow
+               </div>`
+            : '';
+
         el.innerHTML = `
             <div style="font-weight: bold; margin-bottom: 8px; color: #2E7D32;">
                 📐 Scale Preview
@@ -721,6 +896,7 @@ export class ModelImportDialog {
                 ${result.realWorldDimensions.heightM.toFixed(2)}m × 
                 ${result.realWorldDimensions.depthM.toFixed(2)}m
             </div>
+            ${workflowNote}
         `;
     }
 
@@ -784,6 +960,10 @@ export class ModelImportDialog {
             console.log('[ModelImportDialog] Model imported:', entry.name);
             console.log('[ModelImportDialog]   Category:', this.formState.category);
             console.log('[ModelImportDialog]   Scale:', this.currentScaleResult.scaleFactor);
+            if (this.detectedStockType) {
+                console.log('[ModelImportDialog]   Detected type:', this.detectedStockType);
+                console.log('[ModelImportDialog]   ✓ Pre-scaled by normalized mesh workflow');
+            }
 
             // Close with result
             this.close(entry);

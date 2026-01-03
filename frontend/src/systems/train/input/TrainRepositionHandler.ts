@@ -25,10 +25,10 @@ import { AbstractMesh } from '@babylonjs/core/Meshes/abstractMesh';
 import { PointerEventTypes } from '@babylonjs/core/Events/pointerEvents';
 import { Observable } from '@babylonjs/core/Misc/observable';
 
-import { TrainController } from './TrainController';
-import { TrainSystem, type TrainRepositionRequest } from './TrainSystem';
-import { TrackEdgeFinder, type EdgeFindResult } from './TrackEdgeFinder';
-import { notify } from '../../ui/NotificationSystem';
+import { TrainController } from '../core/TrainController';
+import { TrainSystem, type TrainRepositionRequest } from '../core/TrainSystem';
+import { TrackEdgeFinder, type EdgeFindResult } from '../track/TrackEdgeFinder';
+import { notify } from '../../../ui/NotificationSystem';
 
 // ============================================================================
 // CONSTANTS

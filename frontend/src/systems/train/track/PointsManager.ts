@@ -22,9 +22,9 @@
 
 import { Scene } from '@babylonjs/core/scene';
 import { Observable } from '@babylonjs/core/Misc/observable';
-import type { TrackPiece } from '../track/TrackPiece';
-import type { TrackSystem } from '../track/TrackSystem';
-import type { GraphEdge } from '../track/TrackGraph';
+import type { TrackPiece } from '../../track/TrackPiece';
+import type { TrackSystem } from '../../track/TrackSystem';
+import type { GraphEdge } from '../../track/TrackGraph';
 
 // ============================================================================
 // CONSTANTS

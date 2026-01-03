@@ -17,7 +17,7 @@
  */
 
 import type { AbstractMesh } from '@babylonjs/core/Meshes/abstractMesh';
-import type { TrainSystem } from './TrainSystem';
+import type { TrainSystem } from '../core/TrainSystem';
 
 // ============================================================================
 // CONSTANTS

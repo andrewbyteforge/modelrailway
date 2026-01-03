@@ -22,10 +22,10 @@ import { Vector3 } from '@babylonjs/core/Maths/math.vector';
 import { TransformNode } from '@babylonjs/core/Meshes/transformNode';
 import { PointerEventTypes } from '@babylonjs/core/Events/pointerEvents';
 import { Observable } from '@babylonjs/core/Misc/observable';
-import type { TrackSystem } from '../track/TrackSystem';
-import type { TrainSystem } from './TrainSystem';
-import type { TrainController } from './TrainController';
-import { notify } from '../../ui/NotificationSystem';
+import type { TrackSystem } from '../../track/TrackSystem';
+import type { TrainSystem } from '../core/TrainSystem';
+import type { TrainController } from '../core/TrainController';
+import { notify } from '../../../ui/NotificationSystem';
 
 // ============================================================================
 // CONSTANTS

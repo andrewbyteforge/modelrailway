@@ -37,18 +37,14 @@ import { RightSidebar } from '../ui/panels/RightSidebar';
 // ============================================================================
 // TRAIN SYSTEM IMPORTS
 // ============================================================================
-import { TrainSystem } from '../systems/train/TrainSystem';
-import { TrainControlPanel } from '../ui/TrainControlPanel';
-import { TrainIntegration, createGlobalHelpers } from '../systems/train/TrainIntegration';
-
-// ============================================================================
-// TRAIN MESH DETECTOR - For cross-system train detection
-// Enables: Click = DRIVING, Shift+Click = REPOSITIONING
-// ============================================================================
 import {
+    TrainSystem,
+    TrainIntegration,
+    createGlobalHelpers,
     registerTrainSystem,
     unregisterTrainSystem
-} from '../systems/train/TrainMeshDetector';
+} from '../systems/train';
+import { TrainControlPanel } from '../ui/TrainControlPanel';
 
 // ============================================================================
 // TRANSFORM CONTROLS IMPORT

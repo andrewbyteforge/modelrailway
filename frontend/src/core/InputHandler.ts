@@ -22,8 +22,7 @@ import { BaseboardSystem } from '../systems/baseboard/BaseboardSystem';
 import { CameraSystem } from '../systems/camera/CameraSystem';
 import { UIManager } from '../ui/UIManager';
 import { InputManager } from '../ui/InputManager';
-import { TrainSystem } from '../systems/train/TrainSystem';
-import { TrainIntegration } from '../systems/train/TrainIntegration';
+import { TrainSystem, TrainIntegration } from '../systems/train';
 import { WorldOutliner } from '../systems/outliner/WorldOutliner';
 import { OutlinerManager } from './OutlinerManager';
 

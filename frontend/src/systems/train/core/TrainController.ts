@@ -23,11 +23,11 @@ import { Color3 } from '@babylonjs/core/Maths/math.color';
 import { Vector3 } from '@babylonjs/core/Maths/math.vector';
 import { Observable } from '@babylonjs/core/Misc/observable';
 
-import { TrainPhysics, type TrainPhysicsState, type TrainPhysicsConfig } from './TrainPhysics';
-import { TrainPathFollower } from './TrainPathFollower';
-import { TrainSoundManager } from './TrainSoundManager';
-import type { TrackGraph } from '../track/TrackGraph';
-import type { PointsManager } from './PointsManager';
+import { TrainPhysics, type TrainPhysicsState, type TrainPhysicsConfig } from '../physics/TrainPhysics';
+import { TrainPathFollower } from '../physics/TrainPathFollower';
+import { TrainSoundManager } from '../utilities/TrainSoundManager';
+import type { TrackGraph } from '../../track/TrackGraph';
+import type { PointsManager } from '../track/PointsManager';
 
 
 console.log('[TrainController] FILE LOADED - this proves the file is being used');
@@ -209,13 +209,9 @@ export class TrainController {
         info: TrainInfo,
         config?: Partial<TrainControllerConfig>
     ) {
-        alert('TrainController constructor - Step 1');
-
         this.scene = scene;
         this.info = info;
         this.rootNode = rootNode;
-
-        alert('TrainController constructor - Step 2: basic done');
 
         this.config = {
             enableSound: true,
@@ -223,32 +219,20 @@ export class TrainController {
             ...config
         };
 
-        alert('TrainController constructor - Step 3: config done, about to create TrainPhysics');
-
         this.physics = new TrainPhysics(config?.physicsConfig);
-
-        alert('TrainController constructor - Step 4: TrainPhysics done, about to create TrainPathFollower');
 
         this.pathFollower = new TrainPathFollower(graph, pointsManager, {
             heightOffset: this.config.modelYOffset
         });
 
-        alert('TrainController constructor - Step 5: TrainPathFollower done');
-
         if (this.config.enableSound) {
             this.soundManager = new TrainSoundManager(scene);
         }
 
-        alert('TrainController constructor - Step 6: Sound done, about to collectMeshes');
-
         this.collectMeshes();
-
-        alert('TrainController constructor - Step 7: collectMeshes done');
 
         this.setupMaterials();
         this.setupPickable();
-
-        alert('TrainController constructor - COMPLETE');
     }
 
     // ========================================================================
@@ -555,7 +539,7 @@ export class TrainController {
      * Sound horn
      */
     soundHorn(): void {
-        this.soundManager?.soundHorn();
+        this.soundManager?.playHorn();
         this.onHorn.notifyObservers({ trainId: this.info.id });
     }
 

@@ -19,9 +19,9 @@
  */
 
 import { Vector3, Quaternion } from '@babylonjs/core/Maths/math.vector';
-import type { GraphEdge, GraphNode, CurveDefinition } from '../track/TrackGraph';
-import type { TrackGraph } from '../track/TrackGraph';
-import type { PointsManager } from './PointsManager';
+import type { GraphEdge, GraphNode, CurveDefinition } from '../../track/TrackGraph';
+import type { TrackGraph } from '../../track/TrackGraph';
+import type { PointsManager } from '../track/PointsManager';
 
 // ============================================================================
 // CONSTANTS

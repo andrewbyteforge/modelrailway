@@ -35,10 +35,10 @@ import { Scene } from '@babylonjs/core/scene';
 import { TransformNode } from '@babylonjs/core/Meshes/transformNode';
 import { AbstractMesh } from '@babylonjs/core/Meshes/abstractMesh';
 import { PointerEventTypes } from '@babylonjs/core/Events/pointerEvents';
-import type { TrainSystem } from '../systems/train/TrainSystem';
+import type { TrainSystem } from '../systems/train';
+import { TrackEdgeFinder } from '../systems/train';
 import type { ModelSystem } from '../systems/models/ModelSystem';
 import type { TrackGraph } from '../systems/track/TrackGraph';
-import { TrackEdgeFinder } from '../systems/train/TrackEdgeFinder';
 
 // ============================================================================
 // CONSTANTS

@@ -1,19 +1,19 @@
 /**
- * TrainOptionsMenu.ts
+ * Train Options Menu
  * 
- * Popup menu that appears when a rolling stock model is selected.
- * Provides options to:
- * - Enable Drive Mode (registers with TrainSystem for driving controls)
- * - Reposition Mode (allows moving/scaling the model)
+ * Path: frontend/src/ui/TrainOptionsMenu.ts
  * 
- * @module ui/TrainOptionsMenu
+ * Popup menu for rolling stock selection that shows:
+ * - Drive Mode: Enables WASD/throttle controls for the train
+ * - Reposition Mode: Enables drag/scale/rotate controls for moving the train
+ * 
+ * This menu appears when a user clicks on a rolling stock model (locomotive,
+ * coach, wagon) and allows them to choose how to interact with it.
+ * 
+ * @module TrainOptionsMenu
+ * @author Model Railway Workbench
+ * @version 1.1.0 - Fixed click outside detection timing
  */
-
-// ============================================================================
-// IMPORTS
-// ============================================================================
-
-import type { Scene } from '@babylonjs/core/scene';
 
 // ============================================================================
 // CONSTANTS
@@ -22,16 +22,21 @@ import type { Scene } from '@babylonjs/core/scene';
 /** Logging prefix for console output */
 const LOG_PREFIX = '[TrainOptionsMenu]';
 
+/**
+ * Delay in milliseconds before click-outside detection is enabled
+ * after the menu is shown. This prevents the same click that opens
+ * the menu from immediately closing it.
+ */
+const CLICK_OUTSIDE_DELAY_MS = 50;
+
 // ============================================================================
-// TYPES
+// INTERFACES
 // ============================================================================
 
 /**
- * Configuration for TrainOptionsMenu
+ * Configuration for the train options menu
  */
 export interface TrainOptionsMenuConfig {
-    /** Babylon.js scene reference */
-    scene: Scene;
     /** Callback when Drive mode is selected */
     onDriveMode?: (modelId: string) => void;
     /** Callback when Reposition mode is selected */
@@ -61,6 +66,11 @@ interface MenuOption {
  * Shows options when a train/rolling stock model is clicked:
  * - Drive Mode: Enables WASD/throttle controls
  * - Reposition Mode: Enables drag/scale/rotate controls
+ * 
+ * FIX NOTE (v1.1.0): Added delayed click-outside detection to prevent
+ * the menu from immediately closing when opened. The same click event
+ * that opens the menu was triggering the "click outside" handler because
+ * click events bubble up to the document after the menu is shown.
  */
 export class TrainOptionsMenu {
     // ------------------------------------------------------------------------
@@ -81,6 +91,19 @@ export class TrainOptionsMenu {
 
     /** Whether menu is currently visible */
     private isVisible: boolean = false;
+
+    /**
+     * Flag to temporarily ignore click-outside events.
+     * Set to true when menu is shown, then false after a short delay.
+     * This prevents the opening click from immediately closing the menu.
+     */
+    private ignoreNextOutsideClick: boolean = false;
+
+    /**
+     * Timeout ID for the click-outside delay
+     * Used to clear the timeout if menu is hidden before delay expires
+     */
+    private clickOutsideDelayTimeout: ReturnType<typeof setTimeout> | null = null;
 
     // ------------------------------------------------------------------------
     // CONSTRUCTOR
@@ -107,6 +130,11 @@ export class TrainOptionsMenu {
 
     /**
      * Show the menu for a specific model
+     * 
+     * Sets a temporary flag to ignore click-outside events for a short
+     * period after showing. This prevents the click that opened the menu
+     * from immediately closing it.
+     * 
      * @param modelId - ID of the selected model
      * @param modelName - Display name of the model
      * @param screenX - Screen X position to show menu
@@ -126,7 +154,30 @@ export class TrainOptionsMenu {
             }
 
             if (this.container) {
+                // ============================================================
+                // FIX: Set flag to ignore the opening click
+                // ============================================================
+                // The click event that triggered show() will bubble up to the
+                // document and trigger handleOutsideClick(). By setting this
+                // flag and clearing it after a short delay, we ensure that
+                // opening click is ignored.
+                this.ignoreNextOutsideClick = true;
+
+                // Clear any existing timeout
+                if (this.clickOutsideDelayTimeout) {
+                    clearTimeout(this.clickOutsideDelayTimeout);
+                }
+
+                // Re-enable click-outside detection after a short delay
+                this.clickOutsideDelayTimeout = setTimeout(() => {
+                    this.ignoreNextOutsideClick = false;
+                    this.clickOutsideDelayTimeout = null;
+                    console.log(`${LOG_PREFIX} Click-outside detection enabled`);
+                }, CLICK_OUTSIDE_DELAY_MS);
+
+                // ============================================================
                 // Update title
+                // ============================================================
                 const title = this.container.querySelector('.train-options-title');
                 if (title) {
                     title.textContent = modelName || 'Rolling Stock';
@@ -148,9 +199,18 @@ export class TrainOptionsMenu {
 
     /**
      * Hide the menu
+     * 
+     * Also clears any pending click-outside delay timeout.
      */
     public hide(): void {
         try {
+            // Clear the click-outside delay timeout if pending
+            if (this.clickOutsideDelayTimeout) {
+                clearTimeout(this.clickOutsideDelayTimeout);
+                this.clickOutsideDelayTimeout = null;
+            }
+            this.ignoreNextOutsideClick = false;
+
             if (this.container) {
                 this.container.style.display = 'none';
                 this.isVisible = false;
@@ -185,9 +245,17 @@ export class TrainOptionsMenu {
 
     /**
      * Dispose of the menu
+     * 
+     * Removes DOM elements and clears all timeouts.
      */
     public dispose(): void {
         try {
+            // Clear any pending timeouts
+            if (this.clickOutsideDelayTimeout) {
+                clearTimeout(this.clickOutsideDelayTimeout);
+                this.clickOutsideDelayTimeout = null;
+            }
+
             if (this.container && this.container.parentNode) {
                 this.container.parentNode.removeChild(this.container);
             }
@@ -294,31 +362,29 @@ export class TrainOptionsMenu {
                 display: flex;
                 align-items: center;
                 width: 100%;
-                padding: 12px 14px;
-                margin: 4px 0;
-                background: rgba(255, 255, 255, 0.05);
-                border: 1px solid rgba(255, 255, 255, 0.1);
+                padding: 10px 12px;
+                margin-bottom: 4px;
+                background: transparent;
+                border: 1px solid transparent;
                 border-radius: 6px;
-                color: white;
                 cursor: pointer;
                 transition: all 0.2s ease;
                 text-align: left;
             }
 
-            .train-option-btn:hover {
-                background: rgba(74, 158, 255, 0.2);
-                border-color: #4a9eff;
-                transform: translateX(4px);
+            .train-option-btn:last-child {
+                margin-bottom: 0;
             }
 
-            .train-option-btn:active {
-                transform: translateX(2px);
+            .train-option-btn:hover {
+                background: rgba(74, 158, 255, 0.15);
+                border-color: rgba(74, 158, 255, 0.3);
             }
 
             .train-option-icon {
-                font-size: 24px;
+                font-size: 20px;
                 margin-right: 12px;
-                width: 32px;
+                width: 28px;
                 text-align: center;
             }
 
@@ -327,48 +393,39 @@ export class TrainOptionsMenu {
             }
 
             .train-option-label {
-                font-size: 14px;
+                color: white;
+                font-size: 13px;
                 font-weight: 500;
-                margin-bottom: 2px;
             }
 
             .train-option-desc {
+                color: rgba(255, 255, 255, 0.5);
                 font-size: 11px;
-                color: rgba(255, 255, 255, 0.6);
+                margin-top: 2px;
             }
 
             .train-options-footer {
-                padding: 8px 12px;
+                padding: 8px 16px;
                 border-top: 1px solid rgba(255, 255, 255, 0.1);
                 background: rgba(0, 0, 0, 0.2);
             }
 
             .train-options-hint {
-                color: rgba(255, 255, 255, 0.5);
+                color: rgba(255, 255, 255, 0.4);
                 font-size: 10px;
                 text-align: center;
             }
 
-            /* Drive mode button special styling */
-            .train-option-btn.drive-mode {
-                background: rgba(46, 204, 113, 0.1);
-                border-color: rgba(46, 204, 113, 0.3);
-            }
-
+            /* Drive mode button accent */
             .train-option-btn.drive-mode:hover {
-                background: rgba(46, 204, 113, 0.25);
-                border-color: #2ecc71;
+                background: rgba(76, 175, 80, 0.2);
+                border-color: rgba(76, 175, 80, 0.4);
             }
 
-            /* Reposition mode button */
-            .train-option-btn.reposition-mode {
-                background: rgba(241, 196, 15, 0.1);
-                border-color: rgba(241, 196, 15, 0.3);
-            }
-
+            /* Reposition mode button accent */
             .train-option-btn.reposition-mode:hover {
-                background: rgba(241, 196, 15, 0.25);
-                border-color: #f1c40f;
+                background: rgba(241, 196, 15, 0.15);
+                border-color: rgba(241, 196, 15, 0.3);
             }
         `;
 
@@ -535,9 +592,24 @@ export class TrainOptionsMenu {
 
     /**
      * Handle click outside menu
+     * 
+     * FIX (v1.1.0): Now checks the ignoreNextOutsideClick flag before
+     * closing. This flag is set when the menu is shown and cleared after
+     * a short delay, preventing the opening click from closing the menu.
      */
     private handleOutsideClick(event: MouseEvent): void {
         if (!this.isVisible || !this.container) return;
+
+        // ====================================================================
+        // FIX: Check if we should ignore this click
+        // ====================================================================
+        // If the menu was just shown, ignore this click event because it's
+        // likely the same click that triggered show(). The flag is cleared
+        // after a short delay in show().
+        if (this.ignoreNextOutsideClick) {
+            console.log(`${LOG_PREFIX} Ignoring click (menu just opened)`);
+            return;
+        }
 
         try {
             const target = event.target as HTMLElement;

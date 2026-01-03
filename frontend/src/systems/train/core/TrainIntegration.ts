@@ -33,7 +33,7 @@ import { TransformNode } from '@babylonjs/core/Meshes/transformNode';
 import { AbstractMesh } from '@babylonjs/core/Meshes/abstractMesh';
 import { Scene } from '@babylonjs/core/scene';
 import type { TrainSystem } from './TrainSystem';
-import type { TrackGraph, GraphEdge, GraphNode, CurveDefinition } from '../track/TrackGraph';
+import type { TrackGraph, GraphEdge, GraphNode, CurveDefinition } from '../../track/TrackGraph';
 
 // ============================================================================
 // CONSTANTS

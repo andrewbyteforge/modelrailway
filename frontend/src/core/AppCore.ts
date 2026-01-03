@@ -27,9 +27,8 @@ import { TrackCatalog } from '../systems/track/TrackCatalog';
 import { UIManager } from '../ui/UIManager';
 import { InputManager } from '../ui/InputManager';
 import { ModelImportButton } from '../ui/ModelImportButton';
-import { TrainSystem } from '../systems/train/TrainSystem';
+import { TrainSystem, TrainIntegration, createGlobalHelpers } from '../systems/train';
 import { TrainControlPanel } from '../ui/TrainControlPanel';
-import { TrainIntegration, createGlobalHelpers } from '../systems/train/TrainIntegration';
 import { SidebarTransformControls } from '../ui/components/SidebarTransformControls';
 
 // ============================================================================

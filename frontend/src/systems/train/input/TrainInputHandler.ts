@@ -26,14 +26,14 @@
 import { Scene } from '@babylonjs/core/scene';
 import { PointerEventTypes } from '@babylonjs/core/Events/pointerEvents';
 import type { AbstractMesh } from '@babylonjs/core/Meshes/abstractMesh';
-import type { TrainController } from './TrainController';
+import type { TrainController } from '../core/TrainController';
 import {
     INPUT_LOG_PREFIX,
     type TrainInputDelegate,
     type TrainInputConfig,
     type TrainKeyboardControls,
     DEFAULT_KEYBOARD_CONTROLS
-} from './TrainSystemTypes';
+} from '../core/TrainSystemTypes';
 
 // ============================================================================
 // TRAIN INPUT HANDLER CLASS

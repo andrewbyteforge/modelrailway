@@ -20,9 +20,7 @@
  * @version 1.2.0
  */
 
-import type { TrainSystem } from '../systems/train/TrainSystem';
-import type { TrainController } from '../systems/train/TrainController';
-import type { TrainPhysicsState, TrainDirection } from '../systems/train/TrainPhysics';
+import type { TrainSystem, TrainController, TrainPhysicsState, TrainDirection } from '../systems/train';
 
 // ============================================================================
 // CONSTANTS
@@ -134,6 +132,9 @@ export class TrainControlPanel {
     /** Is panel visible */
     private isVisible: boolean = false;
 
+    /** Keyboard handler for ESC to close */
+    private keydownHandler: ((e: KeyboardEvent) => void) | null = null;
+
     // ========================================================================
     // CONSTRUCTOR
     // ========================================================================
@@ -176,7 +177,12 @@ export class TrainControlPanel {
         // Setup event listeners
         this.setupEventListeners();
 
-        // Subscribe to train selection changes
+        // Subscribe to drive mode activation (when user explicitly chooses to drive)
+        this.trainSystem.onDriveModeActivated.add((train) => {
+            this.showForDriving(train);
+        });
+
+        // Subscribe to train deselection (to hide panel when train is deselected)
         this.trainSystem.onSelectionChanged.add((train) => {
             this.handleSelectionChanged(train);
         });
@@ -272,7 +278,13 @@ export class TrainControlPanel {
                 background: rgba(0, 0, 0, 0.3);
                 border-bottom: 1px solid #333;
             }
-            
+
+            .${CSS_PREFIX}-header-left {
+                display: flex;
+                flex-direction: column;
+                gap: 2px;
+            }
+
             .${CSS_PREFIX}-title {
                 font-size: 14px;
                 font-weight: 600;
@@ -280,14 +292,34 @@ export class TrainControlPanel {
                 text-transform: uppercase;
                 letter-spacing: 1px;
             }
-            
+
             .${CSS_PREFIX}-train-name {
                 font-size: 11px;
                 color: #888;
-                max-width: 120px;
+                max-width: 160px;
                 overflow: hidden;
                 text-overflow: ellipsis;
                 white-space: nowrap;
+            }
+
+            .${CSS_PREFIX}-close-btn {
+                width: 28px;
+                height: 28px;
+                border: none;
+                background: rgba(255, 255, 255, 0.1);
+                color: #888;
+                border-radius: 6px;
+                cursor: pointer;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                font-size: 18px;
+                transition: all 0.15s ease;
+            }
+
+            .${CSS_PREFIX}-close-btn:hover {
+                background: rgba(239, 68, 68, 0.3);
+                color: #f87171;
             }
             
             /* ================================================
@@ -621,6 +653,9 @@ export class TrainControlPanel {
         const header = document.createElement('div');
         header.className = `${CSS_PREFIX}-header`;
 
+        const headerLeft = document.createElement('div');
+        headerLeft.className = `${CSS_PREFIX}-header-left`;
+
         const title = document.createElement('div');
         title.className = `${CSS_PREFIX}-title`;
         title.textContent = '🚂 Train Control';
@@ -629,8 +664,20 @@ export class TrainControlPanel {
         this.trainNameLabel.className = `${CSS_PREFIX}-train-name`;
         this.trainNameLabel.textContent = 'No train';
 
-        header.appendChild(title);
-        header.appendChild(this.trainNameLabel);
+        headerLeft.appendChild(title);
+        headerLeft.appendChild(this.trainNameLabel);
+
+        // Close button
+        const closeBtn = document.createElement('button');
+        closeBtn.className = `${CSS_PREFIX}-close-btn`;
+        closeBtn.innerHTML = '×';
+        closeBtn.title = 'Close (ESC)';
+        closeBtn.addEventListener('click', () => {
+            this.hide();
+        });
+
+        header.appendChild(headerLeft);
+        header.appendChild(closeBtn);
 
         // ====================================================================
         // BODY
@@ -817,6 +864,15 @@ export class TrainControlPanel {
         this.container.addEventListener('click', (e) => {
             e.stopPropagation();
         });
+
+        // Keyboard handler for ESC to close panel
+        this.keydownHandler = (e: KeyboardEvent) => {
+            if (e.key === 'Escape' && this.isVisible) {
+                e.preventDefault();
+                this.hide();
+            }
+        };
+        window.addEventListener('keydown', this.keydownHandler);
     }
 
     // ========================================================================
@@ -894,17 +950,34 @@ export class TrainControlPanel {
 
     /**
      * Handle train selection change
+     * Note: Panel no longer auto-shows on selection - use showForDriving() instead
      * @param train - Selected train or null
      */
     private handleSelectionChanged(train: TrainController | null): void {
-        this.currentTrain = train;
-
-        if (train) {
-            this.show();
-            this.updateTrainInfo(train);
-        } else {
+        // If deselected while panel is visible, hide it
+        if (!train && this.isVisible) {
             this.hide();
         }
+
+        // Update current train reference but don't auto-show
+        // Panel will only show when explicitly called via showForDriving()
+        if (train && this.isVisible) {
+            // If already showing, update to new train
+            this.currentTrain = train;
+            this.updateTrainInfo(train);
+        }
+    }
+
+    /**
+     * Show the control panel for driving a specific train
+     * Call this when user explicitly chooses to drive (e.g., from selection modal)
+     * @param train - The train controller to drive
+     */
+    public showForDriving(train: TrainController): void {
+        this.currentTrain = train;
+        this.updateTrainInfo(train);
+        this.show();
+        console.log(`${LOG_PREFIX} Showing controls for driving: ${train.getInfo().name}`);
     }
 
     /**
@@ -1090,6 +1163,12 @@ export class TrainControlPanel {
         if (this.styleElement) {
             this.styleElement.remove();
             this.styleElement = null;
+        }
+
+        // Remove keyboard handler
+        if (this.keydownHandler) {
+            window.removeEventListener('keydown', this.keydownHandler);
+            this.keydownHandler = null;
         }
 
         // Clear references

@@ -16,9 +16,9 @@ import { Scene } from '@babylonjs/core/scene';
 import { TransformNode } from '@babylonjs/core/Meshes/transformNode';
 
 // Import train system
-import { TrainSystem } from '../TrainSystem';
-import { TrainControlPanel } from '../../ui/TrainControlPanel';
-import type { TrackSystem } from '../../track/TrackSystem';
+import { TrainSystem } from '../core/TrainSystem';
+import { TrainControlPanel } from '../../../ui/TrainControlPanel';
+import type { TrackSystem } from '../../../track/TrackSystem';
 
 // ============================================================================
 // INTEGRATION STEPS

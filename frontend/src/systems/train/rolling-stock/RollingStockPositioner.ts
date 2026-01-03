@@ -32,9 +32,9 @@ import { Color3 } from '@babylonjs/core/Maths/math.color';
 import { StandardMaterial } from '@babylonjs/core/Materials/standardMaterial';
 import { Observable } from '@babylonjs/core/Misc/observable';
 import { PointerEventTypes } from '@babylonjs/core/Events/pointerEvents';
-import type { TrackGraph, GraphEdge, GraphNode, CurveDefinition } from '../track/TrackGraph';
-import type { TrainSystem } from './TrainSystem';
-import type { TrainController } from './TrainController';
+import type { TrackGraph, GraphEdge, GraphNode, CurveDefinition } from '../../track/TrackGraph';
+import type { TrainSystem } from '../core/TrainSystem';
+import type { TrainController } from '../core/TrainController';
 
 // ============================================================================
 // CONSTANTS - OO Gauge Specifications

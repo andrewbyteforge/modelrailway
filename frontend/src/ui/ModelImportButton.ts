@@ -27,6 +27,13 @@
  * - Rolling stock is now automatically registered with TrainSystem after placement
  * - Enables driving controls (throttle, direction, brake, horn)
  * 
+ * UPDATED: Meshy Normalized Mesh Workflow
+ * - Automatically detects Meshy-style normalized models (bounds -1 to 1)
+ * - Shows type selector dialog for rolling stock
+ * - Auto-scales to correct OO gauge dimensions
+ * - Positions wheels perfectly on rails
+ * - Enables driver controls immediately
+ * 
  * Train Orientation Fix:
  * - If trains face sideways on track, use browser console:
  *   window.setTrainOrientation('NEG_Y')  // For Blender exports
@@ -40,7 +47,7 @@
  * 
  * @module ModelImportButton
  * @author Model Railway Workbench
- * @version 3.0.0 - Refactored into modular architecture
+ * @version 3.1.0 - Added Meshy normalized mesh workflow
  */
 
 // ============================================================================
@@ -69,6 +76,13 @@ import { registerGaugeCalculatorConsoleUtils } from '../systems/scaling/GaugeSca
 
 import { ModelSelectionHandler } from './ModelSelectionHandler';
 import { ModelRegistrationHelper } from './ModelRegistrationHelper';
+
+// ============================================================================
+// NORMALIZED MESH WORKFLOW IMPORTS
+// ============================================================================
+
+import { executeImportWorkflow } from './ModelImportWorkflow';
+import type { RollingStockType } from '../systems/train/rolling-stock/NormalizedMeshHandler';
 
 // ============================================================================
 // CONSTANTS
@@ -104,6 +118,7 @@ const SURFACE_HEIGHTS = {
  * - Scale manager for model scaling
  * - Selection handler for user interaction
  * - Registration helper for system integration
+ * - Normalized mesh workflow for Meshy models
  * 
  * @example
  * ```typescript
@@ -354,11 +369,12 @@ export class ModelImportButton {
         console.log('║  Delete             → Remove selected model                ║');
         console.log('║  Escape             → Deselect                             ║');
         console.log('╠════════════════════════════════════════════════════════════╣');
-        console.log('║  🚂 ROLLING STOCK: Auto-scaled to OO gauge (16.5mm)        ║');
-        console.log('║     Use S+Scroll to fine-tune after placement              ║');
+        console.log('║  🚂 MESHY TRAINS: Auto-detected and scaled to OO gauge!    ║');
+        console.log('║     Import → Type selector → Perfect 230mm locomotive!     ║');
         console.log('╠════════════════════════════════════════════════════════════╣');
         console.log('║  Console: showOOSpecs() → Show OO gauge specifications     ║');
         console.log('║  Console: calculateOOScale(widthMm) → Calculate scale      ║');
+        console.log('║  Console: meshDebug.help() → Normalized mesh debugger      ║');
         console.log('╚════════════════════════════════════════════════════════════╝');
         console.log('');
     }
@@ -470,6 +486,57 @@ export class ModelImportButton {
     }
 
     // ========================================================================
+    // NORMALIZED MESH WORKFLOW HOOK
+    // ========================================================================
+
+    /**
+     * Process a model through the normalized mesh workflow
+     * 
+     * This is called by ModelImportDialog after loading the GLB file
+     * but before adding it to the library.
+     * 
+     * @param rootNode - Model root transform node
+     * @param meshes - Model meshes
+     * @param filename - Original filename for type detection
+     * @returns RollingStockType if workflow succeeded, undefined otherwise
+     */
+    public async processNormalizedMeshWorkflow(
+        rootNode: any,
+        meshes: any[],
+        filename: string
+    ): Promise<RollingStockType | undefined> {
+        console.log(`${LOG_PREFIX} Running normalized mesh workflow for: ${filename}`);
+
+        try {
+            const workflowResult = await executeImportWorkflow(
+                rootNode,
+                meshes,
+                filename
+            );
+
+            if (!workflowResult.success) {
+                if (workflowResult.message === 'Import cancelled') {
+                    console.log(`${LOG_PREFIX} User cancelled type selection`);
+                    // Caller should dispose the model
+                    return undefined;
+                }
+                console.warn(`${LOG_PREFIX} Workflow failed: ${workflowResult.message}`);
+                return undefined;
+            }
+
+            if (workflowResult.stockType) {
+                console.log(`${LOG_PREFIX} ✓ Workflow complete: ${workflowResult.stockType}`);
+            }
+
+            return workflowResult.stockType;
+
+        } catch (error) {
+            console.error(`${LOG_PREFIX} Normalized mesh workflow error:`, error);
+            return undefined;
+        }
+    }
+
+    // ========================================================================
     // IMPORT DIALOG
     // ========================================================================
 
@@ -479,6 +546,9 @@ export class ModelImportButton {
      * After import, the model is:
      * - Rolling stock → User clicks on track to place (TrackModelPlacer)
      * - Other categories → Placed directly on baseboard centre
+     * 
+     * NOTE: The normalized mesh workflow is now handled inside ModelImportDialog
+     * via the processNormalizedMeshWorkflow() hook method above.
      */
     public showImportDialog(): void {
         if (!this.modelSystem) {
@@ -487,6 +557,18 @@ export class ModelImportButton {
         }
 
         const dialog = new ModelImportDialog(this.scene, this.modelSystem);
+
+        // ====================================================================
+        // IMPORTANT: Pass workflow hook to dialog
+        // The dialog will call this method when loading a model file
+        // ====================================================================
+        if ((dialog as any).setNormalizedMeshWorkflowHook) {
+            (dialog as any).setNormalizedMeshWorkflowHook(
+                this.processNormalizedMeshWorkflow.bind(this)
+            );
+            console.log(`${LOG_PREFIX} Normalized mesh workflow hook registered`);
+        }
+
         dialog.show(async (entry) => {
             if (entry) {
                 console.log(`${LOG_PREFIX} Imported: ${entry.name}`);

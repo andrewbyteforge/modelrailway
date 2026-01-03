@@ -29,17 +29,17 @@ import { Vector3 } from '@babylonjs/core/Maths/math.vector';
 import { PointerEventTypes } from '@babylonjs/core/Events/pointerEvents';
 import { Observable } from '@babylonjs/core/Misc/observable';
 
-import { TrainSystem } from './TrainSystem';
-import { TrackEdgeFinder, type EdgeFindResult } from './TrackEdgeFinder';
+import { TrainSystem } from '../core/TrainSystem';
+import { TrackEdgeFinder, type EdgeFindResult } from '../track/TrackEdgeFinder';
 import {
     TrainPositionHelper,
     getTrainPositionHelper,
     TRACK_HEIGHTS,
     type PositionOptions,
     type AutoScaleResult
-} from './TrainPositionHelper';
-import type { TrainController } from './TrainController';
-import type { TrackSystem } from '../track/TrackSystem';
+} from '../physics/TrainPositionHelper';
+import type { TrainController } from '../core/TrainController';
+import type { TrackSystem } from '../../track/TrackSystem';
 
 // ============================================================================
 // CONSTANTS

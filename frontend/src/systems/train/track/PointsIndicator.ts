@@ -24,8 +24,8 @@ import { Color3 } from '@babylonjs/core/Maths/math.color';
 import { Vector3 } from '@babylonjs/core/Maths/math.vector';
 import { TransformNode } from '@babylonjs/core/Meshes/transformNode';
 import { PointsManager, type PointData, type PointState } from './PointsManager';
-import type { TrackSystem } from '../track/TrackSystem';
-import type { TrackPiece } from '../track/TrackPiece';
+import type { TrackSystem } from '../../track/TrackSystem';
+import type { TrackPiece } from '../../track/TrackPiece';
 
 // ============================================================================
 // CONSTANTS

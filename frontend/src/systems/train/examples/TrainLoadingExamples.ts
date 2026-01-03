@@ -15,7 +15,7 @@
  */
 
 import { Scene } from '@babylonjs/core/scene';
-import { TrainModelLoader, TrainModelConfig, MODEL_SCALE_PRESETS } from '../TrainModelLoader';
+import { TrainModelLoader, TrainModelConfig, MODEL_SCALE_PRESETS } from '../utilities/TrainModelLoader';
 
 // ============================================================================
 // EXAMPLE 1: Model Already at OO Scale (Most Common)
