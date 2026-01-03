@@ -203,9 +203,11 @@ export class ModelRegistrationHelper {
             this.registerModelWithOutliner(placedModel, entry);
 
             // ----------------------------------------------------------------
-            // Register with TrainSystem (rolling stock only)
+            // TrainSystem Registration - DISABLED
+            // User can manually enable driving controls via right-click menu
+            // or by selecting the train and pressing the drive button
             // ----------------------------------------------------------------
-            this.registerWithTrainSystem(placedModel, entry);
+            // this.registerWithTrainSystem(placedModel, entry);
 
             console.log(`${LOG_PREFIX} ✓ Model registration complete: ${entry.name}`);
 
@@ -296,47 +298,117 @@ export class ModelRegistrationHelper {
         try {
             console.log(`${LOG_PREFIX} 🚂 Auto gauge scaling for: ${placedModel.id}`);
 
-            // Analyze the model and calculate correct scale
-            const analysis = this.gaugeCalculator.analyzeAndCalculateScale(
-                placedModel.meshes,
-                placedModel.rootNode
-            );
+            // ================================================================
+            // CALCULATE MODEL BOUNDS DIRECTLY
+            // ================================================================
+            let minX = Infinity, maxX = -Infinity;
+            let minY = Infinity, maxY = -Infinity;
+            let minZ = Infinity, maxZ = -Infinity;
 
-            if (!analysis.success) {
-                console.warn(`${LOG_PREFIX} Gauge analysis failed: ${analysis.explanation}`);
-                console.warn(`${LOG_PREFIX} Using default scale (1.0)`);
-                return;
-            }
-
-            // Log the analysis results
-            console.log(`${LOG_PREFIX} Gauge Analysis Results:`);
-            console.log(`${LOG_PREFIX}   Measured width: ${(analysis.measuredWidthM * 1000).toFixed(2)}mm`);
-            console.log(`${LOG_PREFIX}   Target width: ${(analysis.targetWidthM * 1000).toFixed(2)}mm`);
-            console.log(`${LOG_PREFIX}   Scale factor: ${(analysis.scaleFactor * 100).toFixed(1)}% (${analysis.scaleFactor.toFixed(4)})`);
-            console.log(`${LOG_PREFIX}   Confidence: ${(analysis.confidence * 100).toFixed(0)}%`);
-            console.log(`${LOG_PREFIX}   Type: ${analysis.details.estimatedType}`);
-
-            if (analysis.warnings.length > 0) {
-                console.warn(`${LOG_PREFIX}   Warnings:`, analysis.warnings);
-            }
-
-            // Apply the calculated scale
-            if (this.config.scaleManager && analysis.scaleFactor !== 1.0) {
-                const result = this.config.scaleManager.setScale(placedModel.id, analysis.scaleFactor);
-
-                if (result.success) {
-                    console.log(`${LOG_PREFIX} ✓ Auto gauge scale applied: ${(analysis.scaleFactor * 100).toFixed(1)}%`);
-
-                    // Show user feedback
-                    this.showScaleNotification(
-                        placedModel.id,
-                        analysis.scaleFactor,
-                        analysis.confidence,
-                        analysis.details.estimatedType
-                    );
-                } else {
-                    console.error(`${LOG_PREFIX} Failed to apply gauge scale:`, result.error);
+            for (const mesh of placedModel.meshes) {
+                if (mesh.getBoundingInfo) {
+                    const bounds = mesh.getBoundingInfo().boundingBox;
+                    minX = Math.min(minX, bounds.minimumWorld.x);
+                    maxX = Math.max(maxX, bounds.maximumWorld.x);
+                    minY = Math.min(minY, bounds.minimumWorld.y);
+                    maxY = Math.max(maxY, bounds.maximumWorld.y);
+                    minZ = Math.min(minZ, bounds.minimumWorld.z);
+                    maxZ = Math.max(maxZ, bounds.maximumWorld.z);
                 }
+            }
+
+            const width = maxX - minX;   // X dimension (across track)
+            const height = maxY - minY;  // Y dimension (vertical)
+            const length = maxZ - minZ;  // Z dimension (along track)
+
+            // Use the largest horizontal dimension for scaling reference
+            const maxHorizontalDim = Math.max(width, length);
+
+            console.log(`${LOG_PREFIX} Model bounds (m): W=${width.toFixed(3)} H=${height.toFixed(3)} L=${length.toFixed(3)}`);
+            console.log(`${LOG_PREFIX} Model bounds (mm): W=${(width * 1000).toFixed(1)} H=${(height * 1000).toFixed(1)} L=${(length * 1000).toFixed(1)}`);
+
+            // ================================================================
+            // SCALE LOGIC FOR OO GAUGE
+            // ================================================================
+            // OO gauge scale is 1:76.2
+            // A typical British loco: ~2.7m wide, ~17m long (real-world)
+            // At OO scale: ~35mm wide, ~223mm long
+            // 
+            // We scale if model appears to be at a non-OO scale.
+            // OO scale rolling stock should be ~25-50mm wide.
+
+            const TARGET_LOCO_WIDTH_MM = 35;  // Target OO gauge loco width
+            const TARGET_LOCO_WIDTH_M = TARGET_LOCO_WIDTH_MM / 1000;
+
+            const widthMm = width * 1000;
+            const lengthMm = length * 1000;
+            const maxDimMm = maxHorizontalDim * 1000;
+
+            let scaleFactor = 1.0;
+            let scaleReason = 'no scaling needed';
+
+            // ================================================================
+            // Determine if scaling is needed based on model size
+            // ================================================================
+
+            if (maxDimMm > 500) {
+                // Model largest dimension > 500mm (0.5m) - needs scaling down
+                // Could be real-world scale or some intermediate scale
+                scaleFactor = TARGET_LOCO_WIDTH_M / width;
+                scaleReason = `scaling down (max dim ${maxDimMm.toFixed(0)}mm > 500mm)`;
+                console.log(`${LOG_PREFIX} Model needs scaling down to OO gauge`);
+            } else if (maxDimMm >= 20 && maxDimMm <= 100) {
+                // Model is in OO scale range (20-100mm) - probably correct
+                scaleFactor = 1.0;
+                scaleReason = 'already OO scale (20-100mm range)';
+                console.log(`${LOG_PREFIX} Model appears to be at OO scale - no scaling`);
+            } else if (maxDimMm < 20) {
+                // Model is very small - might need scaling up
+                scaleFactor = TARGET_LOCO_WIDTH_M / width;
+                scaleReason = `scaling up (max dim ${maxDimMm.toFixed(0)}mm < 20mm)`;
+                console.log(`${LOG_PREFIX} Model is very small - scaling up`);
+            } else {
+                // 100-500mm range - intermediate, scale to OO
+                scaleFactor = TARGET_LOCO_WIDTH_M / width;
+                scaleReason = `intermediate scale (${maxDimMm.toFixed(0)}mm) - scaling to OO`;
+                console.log(`${LOG_PREFIX} Model at intermediate scale - scaling to OO`);
+            }
+
+            console.log(`${LOG_PREFIX} Scale decision:`);
+            console.log(`${LOG_PREFIX}   Max dimension: ${maxDimMm.toFixed(1)}mm`);
+            console.log(`${LOG_PREFIX}   Scale factor: ${(scaleFactor * 100).toFixed(2)}% (${scaleFactor.toFixed(6)})`);
+            console.log(`${LOG_PREFIX}   Reason: ${scaleReason}`);
+
+            // ================================================================
+            // APPLY SCALE IF NEEDED
+            // ================================================================
+            if (scaleFactor !== 1.0) {
+                // Apply uniform scale to root node
+                placedModel.rootNode.scaling.setAll(scaleFactor);
+
+                // Update the adapter's current scale
+                adapter.currentScale = scaleFactor;
+
+                // Update placedModel's scale factor record
+                placedModel.scaleFactor = scaleFactor;
+
+                console.log(`${LOG_PREFIX} ✓ Applied scale: ${(scaleFactor * 100).toFixed(2)}%`);
+
+                // Calculate final dimensions
+                const finalWidth = width * scaleFactor * 1000;
+                const finalHeight = height * scaleFactor * 1000;
+                const finalLength = length * scaleFactor * 1000;
+                console.log(`${LOG_PREFIX} Final size (mm): W=${finalWidth.toFixed(1)} H=${finalHeight.toFixed(1)} L=${finalLength.toFixed(1)}`);
+
+                // Show notification to user
+                this.showScaleNotification(
+                    placedModel.id,
+                    scaleFactor,
+                    0.9, // confidence
+                    'locomotive'
+                );
+            } else {
+                console.log(`${LOG_PREFIX} ✓ No scaling applied - model kept at original size`);
             }
 
         } catch (error) {

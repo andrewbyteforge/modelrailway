@@ -29,8 +29,10 @@ import type { ModelSystem, PlacedModel } from '../systems/models/ModelSystem';
 import type { TrackModelPlacer } from '../systems/models/TrackModelPlacer';
 import type { ScaleManager } from '../systems/scaling/ScaleManager';
 import type { SidebarScaleControls } from './components/SidebarScaleControls';
-import { getTrainClickBehavior } from '../systems/train/TrainMeshDetector';
+// NOTE: getTrainClickBehavior removed - trains now selectable as normal models
+// import { getTrainClickBehavior } from '../systems/train/TrainMeshDetector';
 import { setCameraControlsEnabled } from '../utils/CameraControlHelper';
+import { TrainOptionsMenu } from './TrainOptionsMenu.ts';
 
 // ============================================================================
 // CONSTANTS
@@ -157,6 +159,16 @@ export class ModelSelectionHandler {
     /** Bound keyboard handler */
     private boundKeyboardHandler: ((event: KeyboardEvent) => void) | null = null;
 
+    // ========================================================================
+    // TRAIN OPTIONS MENU
+    // ========================================================================
+
+    /** Train options menu for rolling stock selection */
+    private trainOptionsMenu: TrainOptionsMenu | null = null;
+
+    /** Last click position for menu placement */
+    private lastClickPosition: { x: number; y: number } = { x: 0, y: 0 };
+
     /** Bound wheel handler */
     private boundWheelHandler: ((event: WheelEvent) => void) | null = null;
 
@@ -215,6 +227,11 @@ export class ModelSelectionHandler {
             // Setup keyboard shortcuts
             // ----------------------------------------------------------------
             this.setupKeyboardShortcuts();
+
+            // ----------------------------------------------------------------
+            // Setup train options menu for rolling stock selection
+            // ----------------------------------------------------------------
+            this.setupTrainOptionsMenu();
 
             console.log(`${LOG_PREFIX} ✓ Initialized successfully`);
 
@@ -374,13 +391,10 @@ export class ModelSelectionHandler {
                 }
             }
 
-            // Fallback: Check using getTrainClickBehavior for non-registered trains
-            const trainBehavior = getTrainClickBehavior(pickedMesh, event);
-            if (trainBehavior.isTrain && trainBehavior.shouldDrive) {
-                console.log(`${LOG_PREFIX} Unregistered train mesh clicked - check if train is on track`);
-                this.pointerDownPos = null;
-                return;
-            }
+            // ----------------------------------------------------------------
+            // NOTE: Unregistered trains proceed to normal model selection
+            // User can enable driving controls from the selection menu
+            // ----------------------------------------------------------------
         }
 
         // ----------------------------------------------------------------
@@ -557,23 +571,36 @@ export class ModelSelectionHandler {
      * Extended to check for trains and also select/deselect in ScaleManager
      * 
      * Click behavior:
-     * - Click on train (no Shift) = Select for DRIVING (TrainSystem)
+     * - Click on registered train (no Shift) = Select for DRIVING (TrainSystem)
      * - Shift+Click on train = Select for REPOSITIONING (here)
+     * - Click on unregistered rolling stock = Show options menu
      * - Click on other model = Select for manipulation (here)
      * 
      * @param event - Pointer event
      */
     private handleModelClick(event: PointerEvent): void {
-        if (!this.config.modelSystem) return;
+        if (!this.config.modelSystem) {
+            console.warn(`${LOG_PREFIX} handleModelClick: ModelSystem not available`);
+            return;
+        }
+
+        // Store click position for menu
+        this.lastClickPosition = { x: event.clientX, y: event.clientY };
 
         // Skip if track is selected
         const trackSelected = (window as any).__trackPieceSelected === true;
-        if (trackSelected) return;
+        if (trackSelected) {
+            console.log(`${LOG_PREFIX} handleModelClick: Track selected, skipping`);
+            return;
+        }
 
         // Check what we clicked on
+        console.log(`${LOG_PREFIX} handleModelClick: Picking at (${event.clientX}, ${event.clientY})`);
         const pickResult = this.scene.pick(event.clientX, event.clientY);
 
         if (pickResult?.hit && pickResult.pickedMesh) {
+            console.log(`${LOG_PREFIX} handleModelClick: Hit mesh: ${pickResult.pickedMesh.name}`);
+
             // ----------------------------------------------------------------
             // Check if this is a registered train using window.trainSystem
             // ----------------------------------------------------------------
@@ -584,38 +611,238 @@ export class ModelSelectionHandler {
 
                 if (trainController) {
                     if (!event.shiftKey) {
-                        // Normal click on train = DRIVE mode
-                        console.log(`${LOG_PREFIX} Train click (no Shift) - selecting for DRIVING`);
+                        // Normal click on REGISTERED train = DRIVE mode
+                        console.log(`${LOG_PREFIX} Registered train clicked - selecting for DRIVING`);
                         trainController.select();
                         return;
                     }
                     // Shift+Click = REPOSITION mode
-                    console.log(`${LOG_PREFIX} Shift+Click on train - selecting for REPOSITIONING`);
+                    console.log(`${LOG_PREFIX} Shift+Click on registered train - selecting for REPOSITIONING`);
                     trainSystem.deselectTrain?.();
                     // Continue to select for repositioning below
                 }
-            }
-
-            // Fallback check using getTrainClickBehavior
-            const trainBehavior = getTrainClickBehavior(pickResult.pickedMesh, event);
-            if (trainBehavior.isTrain && !event.shiftKey) {
-                console.log(`${LOG_PREFIX} Unregistered train click - ignoring`);
-                return;
             }
 
             // ----------------------------------------------------------------
             // Check if this mesh belongs to a placed model
             // ----------------------------------------------------------------
             const placedModelId = this.config.modelSystem.getPlacedModelIdFromMesh(pickResult.pickedMesh);
+            console.log(`${LOG_PREFIX} handleModelClick: Placed model ID: ${placedModelId || 'none'}`);
 
             if (placedModelId) {
+                // Get the model to check its category
+                const placedModel = this.config.modelSystem.getPlacedModel(placedModelId);
+
+                if (placedModel) {
+                    // Check if this is rolling stock (unregistered train)
+                    const isRollingStock = this.isRollingStockModel(placedModelId);
+                    console.log(`${LOG_PREFIX} handleModelClick: Is rolling stock: ${isRollingStock}`);
+
+                    if (isRollingStock && !event.shiftKey) {
+                        // Show options menu for unregistered rolling stock
+                        const modelName = this.getModelDisplayName(placedModelId);
+                        console.log(`${LOG_PREFIX} handleModelClick: Showing options menu for: ${modelName}`);
+                        this.showTrainOptionsMenu(
+                            placedModelId,
+                            modelName,
+                            event.clientX,
+                            event.clientY
+                        );
+                        return;
+                    }
+                }
+
+                // Normal model selection
+                console.log(`${LOG_PREFIX} handleModelClick: Selecting model: ${placedModelId}`);
                 this.selectModel(placedModelId);
             } else {
+                console.log(`${LOG_PREFIX} handleModelClick: No model found, deselecting`);
                 this.deselectModel();
             }
         } else {
             // Clicked on nothing - deselect
+            console.log(`${LOG_PREFIX} handleModelClick: No hit, deselecting`);
             this.deselectModel();
+        }
+    }
+
+    /**
+     * Check if a model is rolling stock (train/locomotive/wagon)
+     * @param modelId - ID of the model to check
+     * @returns True if the model is rolling stock
+     */
+    private isRollingStockModel(modelId: string): boolean {
+        try {
+            console.log(`${LOG_PREFIX} isRollingStockModel: Checking ${modelId}`);
+
+            // ================================================================
+            // Method 1: Check ModelLibrary entries by matching IDs
+            // ================================================================
+            const modelLibrary = (window as any).modelLibrary;
+            if (modelLibrary) {
+                console.log(`${LOG_PREFIX} isRollingStockModel: ModelLibrary available`);
+
+                // Try getAll method
+                if (typeof modelLibrary.getAll === 'function') {
+                    const entries = modelLibrary.getAll() || [];
+                    console.log(`${LOG_PREFIX} isRollingStockModel: Found ${entries.length} library entries`);
+
+                    for (const entry of entries) {
+                        // Match: placed_model_TIMESTAMP_N contains model_TIMESTAMP
+                        if (modelId.includes(entry.id) || entry.id.includes(modelId.replace('placed_', '').split('_').slice(0, -1).join('_'))) {
+                            console.log(`${LOG_PREFIX} isRollingStockModel: Matched library entry: ${entry.id} (category: ${entry.category})`);
+                            return entry.category === 'rolling_stock';
+                        }
+                    }
+                }
+
+                // Try entries property directly
+                if (modelLibrary.entries instanceof Map) {
+                    console.log(`${LOG_PREFIX} isRollingStockModel: Checking entries Map`);
+                    for (const [id, entry] of modelLibrary.entries) {
+                        if (modelId.includes(id)) {
+                            console.log(`${LOG_PREFIX} isRollingStockModel: Matched entry: ${id} (category: ${entry.category})`);
+                            return entry.category === 'rolling_stock';
+                        }
+                    }
+                }
+            } else {
+                console.log(`${LOG_PREFIX} isRollingStockModel: ModelLibrary NOT available`);
+            }
+
+            // ================================================================
+            // Method 2: Check model metadata for original filename
+            // ================================================================
+            const model = this.config.modelSystem?.getPlacedModel(modelId);
+            if (model && model.rootNode) {
+                // Check metadata stored on root node
+                const metadata = (model.rootNode as any).metadata;
+                if (metadata) {
+                    console.log(`${LOG_PREFIX} isRollingStockModel: Found metadata:`, metadata);
+
+                    // Check category directly in metadata
+                    if (metadata.category === 'rolling_stock') {
+                        console.log(`${LOG_PREFIX} isRollingStockModel: Metadata category = rolling_stock`);
+                        return true;
+                    }
+
+                    // Check original filename for train keywords
+                    const originalName = metadata.originalName || metadata.fileName || '';
+                    if (originalName) {
+                        const nameLower = originalName.toLowerCase();
+                        const trainKeywords = ['loco', 'train', 'engine', 'wagon', 'coach', 'carriage', 'diesel', 'electric', 'steam', 'class'];
+                        for (const keyword of trainKeywords) {
+                            if (nameLower.includes(keyword)) {
+                                console.log(`${LOG_PREFIX} isRollingStockModel: Original filename '${originalName}' contains '${keyword}'`);
+                                return true;
+                            }
+                        }
+                    }
+                }
+
+                // ================================================================
+                // Method 3: Check root node name for train keywords
+                // ================================================================
+                const nodeName = model.rootNode.name?.toLowerCase() || '';
+                console.log(`${LOG_PREFIX} isRollingStockModel: Checking node name: ${nodeName}`);
+
+                const trainKeywords = ['loco', 'train', 'engine', 'wagon', 'coach', 'carriage', 'diesel', 'electric', 'steam'];
+                for (const keyword of trainKeywords) {
+                    if (nodeName.includes(keyword)) {
+                        console.log(`${LOG_PREFIX} isRollingStockModel: Node name contains '${keyword}'`);
+                        return true;
+                    }
+                }
+
+                // ================================================================
+                // Method 4: Check all child mesh names
+                // ================================================================
+                const meshes = model.rootNode.getChildMeshes?.() || [];
+                for (const mesh of meshes) {
+                    const meshName = mesh.name?.toLowerCase() || '';
+                    for (const keyword of trainKeywords) {
+                        if (meshName.includes(keyword)) {
+                            console.log(`${LOG_PREFIX} isRollingStockModel: Child mesh '${mesh.name}' contains '${keyword}'`);
+                            return true;
+                        }
+                    }
+                }
+            }
+
+            // ================================================================
+            // Method 5: Check PlacedModel category property directly
+            // ================================================================
+            if (model && (model as any).category === 'rolling_stock') {
+                console.log(`${LOG_PREFIX} isRollingStockModel: PlacedModel.category = rolling_stock`);
+                return true;
+            }
+
+            console.log(`${LOG_PREFIX} isRollingStockModel: No rolling stock indicators found for ${modelId}`);
+            return false;
+
+        } catch (error) {
+            console.error(`${LOG_PREFIX} isRollingStockModel: Error checking model:`, error);
+            return false;
+        }
+    }
+
+    /**
+     * Get display name for a model
+     * @param modelId - ID of the model
+     * @returns Display name
+     */
+    private getModelDisplayName(modelId: string): string {
+        try {
+            console.log(`${LOG_PREFIX} getModelDisplayName: Getting name for ${modelId}`);
+
+            // Try ModelLibrary first
+            const modelLibrary = (window as any).modelLibrary;
+            if (modelLibrary) {
+                // Try getAll method
+                if (typeof modelLibrary.getAll === 'function') {
+                    const entries = modelLibrary.getAll() || [];
+                    for (const entry of entries) {
+                        if (modelId.includes(entry.id)) {
+                            console.log(`${LOG_PREFIX} getModelDisplayName: Found in library: ${entry.name}`);
+                            return entry.name;
+                        }
+                    }
+                }
+            }
+
+            // Check metadata for original filename
+            const model = this.config.modelSystem?.getPlacedModel(modelId);
+            if (model && model.rootNode) {
+                const metadata = (model.rootNode as any).metadata;
+                if (metadata) {
+                    // Use original filename
+                    const originalName = metadata.originalName || metadata.fileName;
+                    if (originalName) {
+                        // Clean up the name (remove extension and underscores)
+                        let cleanName = originalName
+                            .replace(/\.(glb|gltf|obj|fbx)$/i, '')
+                            .replace(/_/g, ' ')
+                            .replace(/\s+/g, ' ')
+                            .trim();
+                        console.log(`${LOG_PREFIX} getModelDisplayName: From metadata: ${cleanName}`);
+                        return cleanName || 'Rolling Stock';
+                    }
+                }
+
+                // Fallback to root node name
+                let name = model.rootNode.name || '';
+                name = name.replace(/^model_root_/, '');
+                name = name.replace(/_\d+$/, '');
+                name = name.replace(/_/g, ' ');
+                console.log(`${LOG_PREFIX} getModelDisplayName: From node name: ${name}`);
+                return name || 'Rolling Stock';
+            }
+
+            console.log(`${LOG_PREFIX} getModelDisplayName: Using default name`);
+            return 'Rolling Stock';
+        } catch (error) {
+            console.error(`${LOG_PREFIX} getModelDisplayName: Error:`, error);
+            return 'Rolling Stock';
         }
     }
 
@@ -699,6 +926,145 @@ export class ModelSelectionHandler {
         window.addEventListener('wheel', this.boundWheelHandler, { passive: false });
 
         console.log(`${LOG_PREFIX} ✓ Keyboard shortcuts configured`);
+    }
+
+    // ========================================================================
+    // TRAIN OPTIONS MENU
+    // ========================================================================
+
+    /**
+     * Setup the train options menu for rolling stock selection
+     */
+    private setupTrainOptionsMenu(): void {
+        try {
+            console.log(`${LOG_PREFIX} Setting up train options menu...`);
+
+            this.trainOptionsMenu = new TrainOptionsMenu({
+                scene: this.scene,
+                onDriveMode: (modelId: string) => {
+                    this.handleDriveModeSelection(modelId);
+                },
+                onRepositionMode: (modelId: string) => {
+                    this.handleRepositionModeSelection(modelId);
+                },
+                onClose: () => {
+                    console.log(`${LOG_PREFIX} Train options menu closed`);
+                }
+            });
+
+            console.log(`${LOG_PREFIX} ✓ Train options menu configured`);
+        } catch (error) {
+            console.error(`${LOG_PREFIX} Failed to setup train options menu:`, error);
+        }
+    }
+
+    /**
+     * Handle Drive mode selection from the menu
+     * Registers the model with TrainSystem for driving controls
+     * @param modelId - ID of the model to enable driving for
+     */
+    private handleDriveModeSelection(modelId: string): void {
+        try {
+            console.log(`${LOG_PREFIX} 🚂 Enabling drive mode for: ${modelId}`);
+
+            // Get the model
+            const model = this.config.modelSystem?.getPlacedModel(modelId);
+            if (!model) {
+                console.error(`${LOG_PREFIX} Model not found: ${modelId}`);
+                return;
+            }
+
+            // Get TrainSystem
+            const trainSystem = (window as any).trainSystem;
+            if (!trainSystem) {
+                console.error(`${LOG_PREFIX} TrainSystem not available`);
+                console.log(`${LOG_PREFIX} Tip: TrainSystem may not be initialized yet`);
+                return;
+            }
+
+            // Get the model's library entry to determine the name
+            const modelLibrary = (window as any).modelLibrary;
+            let modelName = 'Train';
+            if (modelLibrary) {
+                const entry = modelLibrary.getEntry?.(modelId);
+                if (entry) {
+                    modelName = entry.name;
+                }
+            }
+
+            // Register with TrainSystem using addTrain()
+            console.log(`${LOG_PREFIX} Registering with TrainSystem...`);
+            const controller = trainSystem.addTrain(
+                model.rootNode,
+                {
+                    name: modelName,
+                    category: 'locomotive'
+                }
+            );
+
+            if (controller) {
+                console.log(`${LOG_PREFIX} ✓ Train registered successfully`);
+                console.log(`${LOG_PREFIX}   Use ↑/W to increase throttle`);
+                console.log(`${LOG_PREFIX}   Use ↓/S to decrease throttle`);
+                console.log(`${LOG_PREFIX}   Use R to toggle direction`);
+                console.log(`${LOG_PREFIX}   Use Space to brake`);
+
+                // Select the train for driving
+                controller.select();
+            } else {
+                console.error(`${LOG_PREFIX} TrainSystem returned no controller`);
+            }
+
+        } catch (error) {
+            console.error(`${LOG_PREFIX} Error enabling drive mode:`, error);
+        }
+    }
+
+    /**
+     * Handle Reposition mode selection from the menu
+     * Keeps the model selected for moving/scaling/rotating
+     * @param modelId - ID of the model to reposition
+     */
+    private handleRepositionModeSelection(modelId: string): void {
+        try {
+            console.log(`${LOG_PREFIX} ✥ Enabling reposition mode for: ${modelId}`);
+
+            // Select the model for manipulation
+            this.selectModel(modelId);
+
+            console.log(`${LOG_PREFIX} ✓ Reposition mode enabled`);
+            console.log(`${LOG_PREFIX}   Drag to move`);
+            console.log(`${LOG_PREFIX}   [ / ] to rotate`);
+            console.log(`${LOG_PREFIX}   S + scroll to scale`);
+
+        } catch (error) {
+            console.error(`${LOG_PREFIX} Error enabling reposition mode:`, error);
+        }
+    }
+
+    /**
+     * Show the train options menu for a rolling stock model
+     * @param modelId - ID of the model
+     * @param modelName - Display name of the model
+     * @param screenX - Screen X position
+     * @param screenY - Screen Y position
+     */
+    private showTrainOptionsMenu(modelId: string, modelName: string, screenX: number, screenY: number): void {
+        try {
+            console.log(`${LOG_PREFIX} Showing train options menu for: ${modelName}`);
+
+            if (this.trainOptionsMenu) {
+                this.trainOptionsMenu.show(modelId, modelName, screenX, screenY);
+            } else {
+                console.error(`${LOG_PREFIX} Train options menu not initialized`);
+                // Fallback: just select the model
+                this.selectModel(modelId);
+            }
+        } catch (error) {
+            console.error(`${LOG_PREFIX} Error showing train options menu:`, error);
+            // Fallback: just select the model
+            this.selectModel(modelId);
+        }
     }
 
     /**

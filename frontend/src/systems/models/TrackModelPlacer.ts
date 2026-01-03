@@ -222,9 +222,9 @@ export class TrackModelPlacer {
     private messageOverlay: HTMLElement | null = null;
 
     /** Model forward axis (which direction model faces in local space) */
-    // Most GLB exports have forward along +Z or -Z
-    // POS_Z = model faces +Z, aligns naturally with track direction
-    private modelForwardAxis: ModelForwardAxis = 'POS_Z';
+    // Train is 90° off - model must face along X axis, not Z
+    // NEG_X = model faces -X, rotate +90° to align with track
+    private modelForwardAxis: ModelForwardAxis = 'NEG_X';
 
     // ========================================================================
     // CONSTRUCTOR
