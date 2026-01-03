@@ -16,7 +16,7 @@
  * 
  * @module ModelRegistrationHelper
  * @author Model Railway Workbench
- * @version 1.0.0
+ * @version 1.1.0
  */
 
 // ============================================================================
@@ -187,15 +187,16 @@ export class ModelRegistrationHelper {
      * 
      * @param placedModel - The placed model from ModelSystem
      * @param entry - Library entry with model metadata
+     * @param skipAutoScale - Skip automatic gauge scaling (model already scaled by workflow)
      */
-    registerModel(placedModel: PlacedModel, entry: ModelLibraryEntry): void {
+    registerModel(placedModel: PlacedModel, entry: ModelLibraryEntry, skipAutoScale: boolean = false): void {
         try {
             console.log(`${LOG_PREFIX} Registering model: ${entry.name}`);
 
             // ----------------------------------------------------------------
             // Register with scaling system
             // ----------------------------------------------------------------
-            this.registerModelForScaling(placedModel, entry.category);
+            this.registerModelForScaling(placedModel, entry.category, skipAutoScale);
 
             // ----------------------------------------------------------------
             // Register with WorldOutliner
@@ -225,11 +226,14 @@ export class ModelRegistrationHelper {
      * Creates a ScalableModelAdapter and registers with ScaleManager
      * 
      * For rolling stock, automatically calculates and applies gauge-correct scaling
+     * (unless skipAutoScale is true, indicating the model was already scaled by
+     * the normalized mesh workflow)
      * 
      * @param placedModel - The placed model from ModelSystem
      * @param category - Model category for scale constraints
+     * @param skipAutoScale - Skip automatic gauge scaling (default: false)
      */
-    registerModelForScaling(placedModel: PlacedModel, category: string): void {
+    registerModelForScaling(placedModel: PlacedModel, category: string, skipAutoScale: boolean = false): void {
         try {
             if (!this.config.scaleManager) {
                 console.warn(`${LOG_PREFIX} ScaleManager not available for scaling registration`);
@@ -266,8 +270,10 @@ export class ModelRegistrationHelper {
             // ================================================================
             const isRollingStock = this.isRollingStockCategory(category);
 
-            if (isRollingStock) {
+            if (isRollingStock && !skipAutoScale) {
                 this.applyAutoGaugeScale(placedModel, adapter);
+            } else if (skipAutoScale) {
+                console.log(`${LOG_PREFIX} ⊗ Skipping auto-scale (already scaled by workflow)`);
             }
 
         } catch (error) {

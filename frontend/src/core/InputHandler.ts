@@ -348,6 +348,14 @@ export class InputHandler {
      * 
      * @param event - Pointer event
      */
+    /**
+     * Handle canvas click for track placement.
+     * Only called for actual clicks (not drags).
+     * 
+     * UPDATED: Now checks if clicked on train/model and skips placement if so
+     * 
+     * @param event - Pointer event
+     */
     private handleCanvasClick(event: PointerEvent): void {
         try {
             // Only handle left click
@@ -398,6 +406,47 @@ export class InputHandler {
 
             console.log(`[InputHandler] Pick result - hit: ${pickResult?.hit}, mesh: ${pickResult?.pickedMesh?.name || 'none'}`);
 
+            // ================================================================
+            // CHECK IF CLICKED ON A TRAIN OR MODEL (not baseboard)
+            // ================================================================
+            if (pickResult?.hit && pickResult.pickedMesh) {
+                const pickedMesh = pickResult.pickedMesh;
+                const meshName = pickedMesh.name.toLowerCase();
+
+                // ----------------------------------------------------------------
+                // Check if this is a train
+                // ----------------------------------------------------------------
+                if (this.trainSystem) {
+                    const trainController = this.trainSystem.findTrainByMesh?.(pickedMesh);
+                    if (trainController) {
+                        console.log(`[InputHandler] Clicked on train - skipping track placement`);
+                        return;
+                    }
+                }
+
+                // ----------------------------------------------------------------
+                // Check if this is a placed model (not baseboard/track)
+                // ----------------------------------------------------------------
+                const isBaseboard = meshName.includes('baseboard') ||
+                    meshName.includes('board') ||
+                    meshName.includes('ground') ||
+                    meshName.includes('table');
+
+                const isTrackMesh = meshName.includes('rail') ||
+                    meshName.includes('track') ||
+                    meshName.includes('sleeper') ||
+                    meshName.includes('ballast');
+
+                // If it's not baseboard or track, it's probably a model - skip placement
+                if (!isBaseboard && !isTrackMesh) {
+                    console.log(`[InputHandler] Clicked on model "${pickedMesh.name}" - skipping track placement`);
+                    return;
+                }
+            }
+
+            // ================================================================
+            // PLACE TRACK (only if clicked on baseboard or track)
+            // ================================================================
             if (pickResult?.hit && pickResult.pickedPoint) {
                 this.placeTrackAtPoint(pickResult.pickedPoint, placementMode);
             } else {

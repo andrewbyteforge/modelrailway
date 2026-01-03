@@ -959,22 +959,51 @@ export class ModelSelectionHandler {
     }
 
     /**
-     * Handle Drive mode selection from the menu
-     * Registers the model with TrainSystem for driving controls
-     * @param modelId - ID of the model to enable driving for
-     */
+         * Handle drive mode selection for a train
+         * Registers the model with TrainSystem and enables driving controls
+         * 
+         * IMPORTANT: Uses addTrain() NOT registerExistingModel()
+         * - addTrain() = register for driving controls WITHOUT repositioning
+         * - registerExistingModel() = repositions onto track (causes issues)
+         * 
+         * @param modelId - ID of the model to enable drive mode for
+         */
+    /**
+      * Handle drive mode selection for a train
+      * Registers the model with TrainSystem and enables driving controls
+      * 
+      * IMPORTANT: Uses addTrain() NOT registerExistingModel()
+      * - addTrain() = register for driving controls WITHOUT repositioning
+      * - registerExistingModel() = repositions onto track (causes issues)
+      * 
+      * After adding, we call placeOnEdge() to connect to track path
+      * 
+      * @param modelId - ID of the model to enable drive mode for
+      */
+    /**
+      * Handle Drive mode selection from the menu
+      * Registers the model with TrainSystem for driving controls
+      * 
+      * IMPORTANT: After addTrain(), must call placeOnEdge() to enable movement!
+      * 
+      
+      */
     private handleDriveModeSelection(modelId: string): void {
         try {
             console.log(`${LOG_PREFIX} 🚂 Enabling drive mode for: ${modelId}`);
 
-            // Get the model
+            // ================================================================
+            // STEP 1: Get the model
+            // ================================================================
             const model = this.config.modelSystem?.getPlacedModel(modelId);
             if (!model) {
                 console.error(`${LOG_PREFIX} Model not found: ${modelId}`);
                 return;
             }
 
-            // Get TrainSystem
+            // ================================================================
+            // STEP 2: Get TrainSystem
+            // ================================================================
             const trainSystem = (window as any).trainSystem;
             if (!trainSystem) {
                 console.error(`${LOG_PREFIX} TrainSystem not available`);
@@ -982,7 +1011,9 @@ export class ModelSelectionHandler {
                 return;
             }
 
-            // Get the model's library entry to determine the name
+            // ================================================================
+            // STEP 3: Get model name for display
+            // ================================================================
             const modelLibrary = (window as any).modelLibrary;
             let modelName = 'Train';
             if (modelLibrary) {
@@ -992,7 +1023,9 @@ export class ModelSelectionHandler {
                 }
             }
 
-            // Register with TrainSystem using addTrain()
+            // ================================================================
+            // STEP 4: Register with TrainSystem using addTrain()
+            // ================================================================
             console.log(`${LOG_PREFIX} Registering with TrainSystem...`);
             const controller = trainSystem.addTrain(
                 model.rootNode,
@@ -1002,18 +1035,113 @@ export class ModelSelectionHandler {
                 }
             );
 
-            if (controller) {
-                console.log(`${LOG_PREFIX} ✓ Train registered successfully`);
-                console.log(`${LOG_PREFIX}   Use ↑/W to increase throttle`);
-                console.log(`${LOG_PREFIX}   Use ↓/S to decrease throttle`);
-                console.log(`${LOG_PREFIX}   Use R to toggle direction`);
-                console.log(`${LOG_PREFIX}   Use Space to brake`);
-
-                // Select the train for driving
-                controller.select();
-            } else {
+            if (!controller) {
                 console.error(`${LOG_PREFIX} TrainSystem returned no controller`);
+                return;
             }
+
+            console.log(`${LOG_PREFIX} ✓ Train registered successfully`);
+
+            // ================================================================
+            // STEP 5: Find nearest track edge and place train on it
+            // This is CRITICAL for the train to actually move!
+            // ================================================================
+            console.log(`${LOG_PREFIX} Finding nearest track edge...`);
+
+            const trackSystem = (window as any).trackSystem;
+            if (trackSystem) {
+                const graph = trackSystem.getGraph?.() || trackSystem.graph;
+
+                if (graph) {
+                    // Get model position (X, Z coordinates - ignore Y)
+                    const modelPos = model.rootNode.position;
+                    console.log(`${LOG_PREFIX}   Model position: (${modelPos.x.toFixed(3)}, ${modelPos.z.toFixed(3)})`);
+
+                    // Find nearest edge using getAllEdges()
+                    const edges = graph.getAllEdges();
+                    console.log(`${LOG_PREFIX}   Searching ${edges.length} edges...`);
+
+                    let closestEdge: any = null;
+                    let closestT = 0.5;
+                    let closestDistance = Infinity;
+
+                    for (const edge of edges) {
+                        // Get edge endpoints
+                        const fromNode = graph.getNode(edge.fromNodeId);
+                        const toNode = graph.getNode(edge.toNodeId);
+
+                        if (!fromNode?.pos || !toNode?.pos) continue;
+
+                        // Calculate closest point on edge to model position
+                        // Use X and Z only (2D distance on horizontal plane)
+                        const ax = fromNode.pos.x;
+                        const az = fromNode.pos.z;
+                        const bx = toNode.pos.x;
+                        const bz = toNode.pos.z;
+                        const px = modelPos.x;
+                        const pz = modelPos.z;
+
+                        // Vector from A to B
+                        const abx = bx - ax;
+                        const abz = bz - az;
+
+                        // Vector from A to P
+                        const apx = px - ax;
+                        const apz = pz - az;
+
+                        // Project P onto line AB, get t parameter
+                        const abLenSq = abx * abx + abz * abz;
+                        if (abLenSq < 0.000001) continue; // Skip zero-length edges
+
+                        let t = (apx * abx + apz * abz) / abLenSq;
+                        t = Math.max(0, Math.min(1, t)); // Clamp to edge
+
+                        // Calculate closest point on edge
+                        const closestX = ax + t * abx;
+                        const closestZ = az + t * abz;
+
+                        // Distance from model to closest point
+                        const dx = px - closestX;
+                        const dz = pz - closestZ;
+                        const distance = Math.sqrt(dx * dx + dz * dz);
+
+                        if (distance < closestDistance) {
+                            closestDistance = distance;
+                            closestEdge = edge;
+                            closestT = t;
+                        }
+                    }
+
+                    // Place on edge if found within tolerance (100mm)
+                    const MAX_PLACEMENT_DISTANCE = 0.1; // 100mm
+
+                    if (closestEdge && closestDistance < MAX_PLACEMENT_DISTANCE) {
+                        console.log(`${LOG_PREFIX}   ✓ Found edge: ${closestEdge.id} at t=${closestT.toFixed(3)}, distance=${(closestDistance * 1000).toFixed(1)}mm`);
+
+                        // Place train on edge - THIS ENABLES MOVEMENT!
+                        controller.placeOnEdge(closestEdge.id, closestT, 1);
+                        console.log(`${LOG_PREFIX}   ✓ Train placed on track edge`);
+                    } else {
+                        console.warn(`${LOG_PREFIX}   ⚠ No nearby track edge found (closest: ${(closestDistance * 1000).toFixed(0)}mm)`);
+                        console.log(`${LOG_PREFIX}   Train will not move until placed on track`);
+                        console.log(`${LOG_PREFIX}   Tip: Use Reposition mode to move train onto track`);
+                    }
+                } else {
+                    console.warn(`${LOG_PREFIX}   TrackGraph not available`);
+                }
+            } else {
+                console.warn(`${LOG_PREFIX}   TrackSystem not available`);
+            }
+
+            // ================================================================
+            // STEP 6: Select the train for driving
+            // ================================================================
+            controller.select();
+
+            console.log(`${LOG_PREFIX}   Use ↑/W to increase throttle`);
+            console.log(`${LOG_PREFIX}   Use ↓/S to decrease throttle`);
+            console.log(`${LOG_PREFIX}   Use R to toggle direction`);
+            console.log(`${LOG_PREFIX}   Use Space to brake`);
 
         } catch (error) {
             console.error(`${LOG_PREFIX} Error enabling drive mode:`, error);

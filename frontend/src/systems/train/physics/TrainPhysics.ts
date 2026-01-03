@@ -488,6 +488,15 @@ export class TrainPhysics {
         return this.currentSpeed < this.config.minSpeedMps;
     }
 
+
+    /**
+     * Check if direction can be changed (train must be nearly stopped)
+     * @returns true if direction change is allowed
+     */
+    canChangeDirection(): boolean {
+        return this.currentSpeed < this.config.directionChangeThreshold;
+    }
+
     /**
      * Check if train is accelerating
      * @returns true if currently accelerating
@@ -495,6 +504,7 @@ export class TrainPhysics {
     isAccelerating(): boolean {
         return this.currentSpeed < this.targetSpeed && !this.isStopped();
     }
+
 
     /**
      * Check if train is decelerating

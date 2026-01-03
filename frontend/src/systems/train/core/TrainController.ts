@@ -494,6 +494,10 @@ export class TrainController {
         this.physics.applyBrake(strength);
     }
 
+    applyBrake(): void {
+        this.brake();
+    }
+
     /**
      * Release brake
      */

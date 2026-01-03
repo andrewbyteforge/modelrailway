@@ -941,8 +941,8 @@ export class TrainSystem {
                 (window as any).__trainRepositionRequested = true;
                 (window as any).__trainToReposition = result.trainId;
 
-                // Get the model ID from the controller's node
-                const modelNode = controller.getNode();
+                // Get the model ID from the controller's root node
+                const modelNode = controller.getRootNode();
                 const modelId = (modelNode as any).__modelId ||
                     (modelNode as any).metadata?.modelId ||
                     modelNode.name;

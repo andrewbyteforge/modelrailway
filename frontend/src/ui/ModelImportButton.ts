@@ -558,13 +558,20 @@ export class ModelImportButton {
 
         const dialog = new ModelImportDialog(this.scene, this.modelSystem);
 
+        let stockType: string | undefined = undefined;
+
         // ====================================================================
         // IMPORTANT: Pass workflow hook to dialog
         // The dialog will call this method when loading a model file
         // ====================================================================
         if ((dialog as any).setNormalizedMeshWorkflowHook) {
             (dialog as any).setNormalizedMeshWorkflowHook(
-                this.processNormalizedMeshWorkflow.bind(this)
+                async (rootNode: any, meshes: any[], filename: string) => {
+                    // Call the workflow and capture the result
+                    stockType = await this.processNormalizedMeshWorkflow(rootNode, meshes, filename);
+                    console.log(`${LOG_PREFIX} ✓ Captured stockType: ${stockType || 'none'}`);
+                    return stockType; // Return it to the dialog too
+                }
             );
             console.log(`${LOG_PREFIX} Normalized mesh workflow hook registered`);
         }
@@ -602,13 +609,20 @@ export class ModelImportButton {
                                 // must call setModelRotation explicitly after placement
                                 // ============================================================
                                 this.modelSystem.setModelRotation(placedModel.id, result.rotationDegrees);
-
                                 console.log(`${LOG_PREFIX} ✓ Placed on track: ${entry.name}`);
                                 console.log(`${LOG_PREFIX}   Position: ${result.position.toString()}`);
                                 console.log(`${LOG_PREFIX}   Rotation: ${result.rotationDegrees.toFixed(1)}°`);
 
                                 // Register with all systems
-                                this.registrationHelper?.registerModel(placedModel, entry);
+                                // If workflow ran successfully, stockType will be defined (e.g., "locomotive")
+                                // This tells us the model was already scaled by the normalized mesh workflow
+                                const skipAutoScale = typeof stockType !== 'undefined' && stockType !== null;
+
+                                this.registrationHelper.registerModel(placedModel, entry, skipAutoScale);
+
+                                if (skipAutoScale) {
+                                    console.log(`${LOG_PREFIX} ⊗ Model pre-scaled by workflow, skipping auto-scale`);
+                                }
 
                                 // Select it
                                 this.modelSystem.selectModel(placedModel.id);
