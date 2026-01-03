@@ -462,12 +462,18 @@ export class ModelRegistrationHelper {
 
                 console.log(`${LOG_PREFIX} 🚂 Registering with TrainSystem...`);
 
-                // Use registerExistingModel directly with the placed model's root node
-                const controller = trainSystem.registerExistingModel(
+                // ============================================================
+                // IMPORTANT: Use addTrain() instead of registerExistingModel()
+                // registerExistingModel() would reposition the train, overwriting
+                // the rotation we carefully calculated from the track direction.
+                // addTrain() just registers for driving controls without moving.
+                // ============================================================
+                const controller = trainSystem.addTrain(
                     placedModel.rootNode,
-                    entry.name,
-                    undefined,  // Let it auto-find the edge
-                    0.5         // Middle of edge
+                    {
+                        name: entry.name,
+                        category: 'locomotive'
+                    }
                 );
 
                 if (controller) {

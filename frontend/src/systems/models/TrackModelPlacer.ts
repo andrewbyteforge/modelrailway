@@ -222,6 +222,8 @@ export class TrackModelPlacer {
     private messageOverlay: HTMLElement | null = null;
 
     /** Model forward axis (which direction model faces in local space) */
+    // Most GLB exports have forward along +Z or -Z
+    // POS_Z = model faces +Z, aligns naturally with track direction
     private modelForwardAxis: ModelForwardAxis = 'POS_Z';
 
     // ========================================================================
@@ -311,53 +313,50 @@ export class TrackModelPlacer {
 
     /**
      * Create the preview indicator mesh
-     * An arrow that shows where and which direction the train will face
+     * A green disc with an arrow showing where and which direction the train will face
+     * 
+     * This is intentionally NOT track-like to avoid confusion
      */
     private createPreviewIndicator(): void {
         try {
-            // Create arrow shape pointing in +Z direction
-            const arrowLength = 0.05; // 50mm
-            const arrowWidth = 0.02;  // 20mm
-
-            // Create a simple arrow using a box and cone
-            const body = MeshBuilder.CreateBox('previewBody', {
-                width: arrowWidth * 0.5,
-                height: 0.01,
-                depth: arrowLength * 0.7
+            // Create a disc as the base (clearly not track)
+            const disc = MeshBuilder.CreateDisc('previewDisc', {
+                radius: 0.03,  // 30mm radius
+                tessellation: 32
             }, this.scene);
 
-            const head = MeshBuilder.CreateCylinder('previewHead', {
-                height: arrowLength * 0.3,
-                diameterTop: 0,
-                diameterBottom: arrowWidth,
-                tessellation: 4
+            // Rotate to be horizontal (disc is created in XY plane)
+            disc.rotation.x = Math.PI / 2;
+
+            // Create an arrow cone pointing in +Z direction to show train facing direction
+            const arrow = MeshBuilder.CreateCylinder('previewArrow', {
+                height: 0.04,        // 40mm long
+                diameterTop: 0,      // Point
+                diameterBottom: 0.015, // 15mm base
+                tessellation: 8
             }, this.scene);
 
-            // Position head at front of body
-            head.rotation.x = Math.PI / 2;
-            head.position.z = arrowLength * 0.5;
+            // Rotate arrow to point along Z axis
+            arrow.rotation.x = -Math.PI / 2;
+            arrow.position.z = 0.02; // Offset forward
 
-            // Merge into single mesh
-            this.previewIndicator = MeshBuilder.CreateBox('previewIndicator', {
-                width: arrowWidth,
-                height: 0.015,
-                depth: arrowLength
-            }, this.scene);
+            // Parent arrow to disc
+            arrow.parent = disc;
+
+            // Use disc as the preview indicator
+            this.previewIndicator = disc as Mesh;
 
             // Apply material
             if (this.previewMaterial) {
-                this.previewIndicator.material = this.previewMaterial;
+                disc.material = this.previewMaterial;
+                arrow.material = this.previewMaterial;
             }
 
             // Initially hidden
             this.previewIndicator.isVisible = false;
             this.previewIndicator.isPickable = false;
 
-            // Clean up temp meshes
-            body.dispose();
-            head.dispose();
-
-            console.log(`${LOG_PREFIX} ✓ Preview indicator created`);
+            console.log(`${LOG_PREFIX} ✓ Preview indicator created (disc with arrow)`);
 
         } catch (error) {
             console.error(`${LOG_PREFIX} Failed to create preview indicator:`, error);

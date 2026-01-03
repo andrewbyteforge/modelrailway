@@ -514,6 +514,13 @@ export class ModelImportButton {
                             });
 
                             if (placedModel) {
+                                // ============================================================
+                                // CRITICAL: Apply the track rotation to the model
+                                // ModelSystem.placeModel doesn't apply rotationDeg, so we
+                                // must call setModelRotation explicitly after placement
+                                // ============================================================
+                                this.modelSystem.setModelRotation(placedModel.id, result.rotationDegrees);
+
                                 console.log(`${LOG_PREFIX} ✓ Placed on track: ${entry.name}`);
                                 console.log(`${LOG_PREFIX}   Position: ${result.position.toString()}`);
                                 console.log(`${LOG_PREFIX}   Rotation: ${result.rotationDegrees.toFixed(1)}°`);
