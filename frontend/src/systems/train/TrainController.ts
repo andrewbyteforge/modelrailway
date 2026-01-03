@@ -643,6 +643,14 @@ export class TrainController {
     }
 
     /**
+     * Get train ID
+     * @returns Unique train identifier
+     */
+    getId(): string {
+        return this.info.id;
+    }
+
+    /**
      * Get train state snapshot
      * @returns Current state
      */

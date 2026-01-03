@@ -10,7 +10,7 @@
  * 
  * @module UI
  * @author Model Railway Workbench
- * @version 2.0.0 - Consolidated UI exports
+ * @version 2.1.0 - Added TrainSelectionModal
  */
 
 // ============================================================================
@@ -43,6 +43,27 @@ export type { AccordionSection } from './UIManagerStyles';
  * InputManager - Mouse/keyboard input handling for track manipulation
  */
 export { InputManager } from './InputManager';
+
+// ============================================================================
+// TRAIN SELECTION MODAL
+// ============================================================================
+
+/**
+ * TrainSelectionModal - Modal for choosing train action (move or drive)
+ * Shows when user clicks on a train
+ */
+export {
+    TrainSelectionModal,
+    showTrainSelectionModal,
+    isTrainSelectionModalOpen,
+    closeTrainSelectionModal
+} from './TrainSelectionModal';
+export type {
+    TrainAction,
+    TrainSelectionResult,
+    TrainSelectionOptions,
+    TrainSelectionCallback
+} from './TrainSelectionModal';
 
 // ============================================================================
 // MODEL IMPORT SYSTEM
@@ -110,7 +131,6 @@ export type {
 
 /**
  * ModelLibraryPanel - Unified sidebar panel for model library
- * Displays all models organized by category with rolling stock subcategories
  */
 export { ModelLibraryPanel } from './ModelLibraryPanel';
 export type {
@@ -119,39 +139,34 @@ export type {
 } from './ModelLibraryPanel';
 
 // ============================================================================
-// TRAIN CONTROL
+// NOTIFICATION SYSTEM
 // ============================================================================
 
 /**
- * TrainControlPanel - DCC-style floating control panel for trains
- * Shows throttle, direction, brake, and status when a train is selected
+ * NotificationSystem - Toast-style notifications
+ */
+export { notify, NotificationSystem } from './NotificationSystem';
+export type { NotificationType, NotificationOptions } from './NotificationSystem';
+
+// ============================================================================
+// TRAIN CONTROL PANEL
+// ============================================================================
+
+/**
+ * TrainControlPanel - UI panel for train controls
  */
 export { TrainControlPanel } from './TrainControlPanel';
-export type { TrainControlPanelConfig } from './TrainControlPanel';
 
 // ============================================================================
-// TYPE RE-EXPORTS
+// SCALE CONTROLS
 // ============================================================================
 
 /**
- * Re-export category types for convenience
+ * SidebarScaleControls - Scale adjustment controls in sidebar
  */
-export type {
-    ModelCategory,
-    CategoryGroup
-} from '../types/ModelCategory.types';
+export { SidebarScaleControls } from './SidebarScaleControls';
 
-export {
-    ROLLING_STOCK_CATEGORIES,
-    GENERAL_CATEGORIES,
-    ALL_CATEGORIES,
-    CATEGORY_LABELS,
-    CATEGORY_ICONS,
-    CATEGORY_DESCRIPTIONS,
-    CATEGORY_GROUPS,
-    isRollingStock,
-    getCategoryLabel,
-    getCategoryIcon,
-    getCategoryGroup,
-    getFormattedCategoryLabel
-} from '../types/ModelCategory.types';
+/**
+ * ScaleManager - Manages model scaling
+ */
+export { ScaleManager } from './ScaleManager';

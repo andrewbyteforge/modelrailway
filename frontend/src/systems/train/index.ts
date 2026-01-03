@@ -1,121 +1,129 @@
 /**
- * index.ts - Train System Module Exports
+ * Train System Index
  * 
  * Path: frontend/src/systems/train/index.ts
  * 
- * Central export point for all train system components.
- * Import from this module instead of individual files.
+ * Re-exports all train system modules for easy importing.
  * 
- * @module train
+ * @module TrainSystem
  * @author Model Railway Workbench
- * @version 1.1.0 - Added TrainIntegration export
- * 
- * @example
- * ```typescript
- * import { 
- *     TrainSystem, 
- *     TrainController, 
- *     TrainIntegration,
- *     PointsManager 
- * } from '../systems/train';
- * 
- * const trainSystem = new TrainSystem(scene, trackSystem);
- * trainSystem.initialize();
- * 
- * const trainIntegration = new TrainIntegration(scene, trainSystem, graph);
- * ```
+ * @version 2.0.0 - Added modal-based selection and reposition handler
  */
 
 // ============================================================================
-// CORE SYSTEMS
+// CORE TRAIN SYSTEM
 // ============================================================================
 
+/**
+ * TrainSystem - Main train management system
+ * Handles train registration, selection, keyboard controls
+ */
 export { TrainSystem } from './TrainSystem';
-export type { TrainSystemConfig } from './TrainSystem';
+export type {
+    TrainSystemConfig,
+    TrainRepositionRequest
+} from './TrainSystem';
 
+/**
+ * TrainController - Individual train controller
+ * Manages physics, movement, and state for a single train
+ */
 export { TrainController } from './TrainController';
-export type {
-    TrainInfo,
-    TrainState,
-    TrainControllerConfig,
-    TrainEvents
-} from './TrainController';
+export type { TrainInfo } from './TrainController';
 
 // ============================================================================
-// INTEGRATION - NEW
+// TRAIN SELECTION & REPOSITIONING
 // ============================================================================
 
-export { TrainIntegration, createGlobalHelpers } from './TrainIntegration';
-export type {
-    TrainRegistrationResult,
-    ScanOptions
-} from './TrainIntegration';
+/**
+ * TrainRepositionHandler - Handles lift & move functionality
+ * Activated when user chooses "Move" from selection modal
+ */
+export {
+    TrainRepositionHandler,
+    createTrainRepositionHandler
+} from './TrainRepositionHandler';
+export type { RepositionResult } from './TrainRepositionHandler';
+
+/**
+ * TrainMeshDetector - Utility for detecting train meshes
+ * Used by other systems to check if a mesh belongs to a train
+ */
+export {
+    registerTrainSystem,
+    unregisterTrainSystem,
+    getTrainSystem,
+    isTrainMesh,
+    getTrainIdFromMesh,
+    getTrainClickBehavior
+} from './TrainMeshDetector';
+export type { TrainClickBehavior } from './TrainMeshDetector';
 
 // ============================================================================
-// PHYSICS
+// TRACK INTEGRATION
 // ============================================================================
 
-export { TrainPhysics, DEFAULT_PHYSICS_CONFIG } from './TrainPhysics';
-export type {
-    TrainDirection,
-    BrakeState,
-    TrainPhysicsConfig,
-    TrainPhysicsState
-} from './TrainPhysics';
-
-// ============================================================================
-// PATH FOLLOWING
-// ============================================================================
-
-export { TrainPathFollower } from './TrainPathFollower';
-export type {
-    TrackPosition,
-    WorldPose,
-    MovementResult,
-    PathFollowerConfig
-} from './TrainPathFollower';
-
-// ============================================================================
-// POINTS/SWITCHES
-// ============================================================================
-
-export { PointsManager } from './PointsManager';
-export type {
-    PointState,
-    PointRoutes,
-    PointData,
-    PointChangeEvent
-} from './PointsManager';
-
-// ============================================================================
-// AUDIO
-// ============================================================================
-
-export { TrainSoundManager } from './TrainSoundManager';
-export type {
-    SoundCategory,
-    SoundConfig
-} from './TrainSoundManager';
-
-// ============================================================================
-// VISUAL INDICATORS
-// ============================================================================
-
-export { PointsIndicator } from './PointsIndicator';
-export type { PointsIndicatorConfig } from './PointsIndicator';
-
-// ============================================================================
-// UTILITIES
-// ============================================================================
-
+/**
+ * TrackEdgeFinder - Finds track edges for train placement
+ */
 export { TrackEdgeFinder } from './TrackEdgeFinder';
 export type {
     EdgeFindResult,
     EdgeFindOptions
 } from './TrackEdgeFinder';
 
-export { RollingStockPlacer } from './RollingStockPlacer';
+/**
+ * PointsManager - Manages track points/switches
+ */
+export { PointsManager } from './PointsManager';
 export type {
-    PendingModel,
-    PlacementResult
-} from './RollingStockPlacer';
+    PointData,
+    PointState,
+    PointChangeEvent
+} from './PointsManager';
+
+// ============================================================================
+// SOUND
+// ============================================================================
+
+/**
+ * TrainSoundManager - Manages train sound effects
+ */
+export { TrainSoundManager } from './TrainSoundManager';
+
+// ============================================================================
+// ROLLING STOCK IMPORT
+// ============================================================================
+
+/**
+ * RollingStockImporter - Handles importing rolling stock models
+ */
+export { RollingStockImporter } from './RollingStockImporter';
+
+/**
+ * RollingStockPositioner - Positions rolling stock on track
+ */
+export { RollingStockPositioner } from './RollingStockPositioner';
+
+/**
+ * RollingStockPlacer - Places rolling stock with preview
+ */
+export { RollingStockPlacer } from './RollingStockPlacer';
+
+// ============================================================================
+// TRAIN INTEGRATION
+// ============================================================================
+
+/**
+ * TrainIntegration - Integrates train system with app
+ */
+export { TrainIntegration } from './TrainIntegration';
+
+// ============================================================================
+// POSITION HELPER
+// ============================================================================
+
+/**
+ * TrainPositionHelper - Helps position trains correctly on track
+ */
+export { TrainPositionHelper } from './TrainPositionHelper';

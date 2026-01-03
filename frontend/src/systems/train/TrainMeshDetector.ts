@@ -7,9 +7,13 @@
  * is part of a registered train. This allows the ModelImportButton
  * and other systems to defer handling to TrainSystem when appropriate.
  * 
+ * UPDATED v2.0.0: Simplified for modal-based train selection
+ *   - No more Shift+click vs regular click distinction
+ *   - Modal handles the choice between move/drive
+ * 
  * @module TrainMeshDetector
  * @author Model Railway Workbench
- * @version 1.0.0
+ * @version 2.0.0 - Modal-based selection support
  */
 
 import type { AbstractMesh } from '@babylonjs/core/Meshes/abstractMesh';
@@ -58,9 +62,9 @@ export function unregisterTrainSystem(): void {
 
 /**
  * Get the registered TrainSystem
- * @returns TrainSystem or null
+ * @returns TrainSystem or null if not registered
  */
-export function getRegisteredTrainSystem(): TrainSystem | null {
+export function getTrainSystem(): TrainSystem | null {
     return globalTrainSystem;
 }
 
@@ -71,128 +75,39 @@ export function getRegisteredTrainSystem(): TrainSystem | null {
 /**
  * Check if a mesh belongs to a registered train
  * 
- * @param mesh - The mesh to check
- * @returns true if the mesh is part of a train
+ * @param mesh - Mesh to check
+ * @returns true if mesh is part of a train
+ * 
+ * @example
+ * ```typescript
+ * const pickResult = scene.pick(x, y);
+ * if (pickResult?.pickedMesh && isTrainMesh(pickResult.pickedMesh)) {
+ *     // This is a train - TrainSystem will handle it
+ *     return;
+ * }
+ * ```
  */
-export function isTrainMesh(mesh: AbstractMesh | null | undefined): boolean {
-    if (!mesh) return false;
-
-    // Method 1: Check for direct controller reference (fast path)
-    if ((mesh as any).__trainController) {
-        return true;
+export function isTrainMesh(mesh: AbstractMesh): boolean {
+    if (!globalTrainSystem) {
+        return false;
     }
 
-    // Method 2: Check mesh metadata
-    if (mesh.metadata?.isTrainMesh || mesh.metadata?.trainId) {
-        return true;
-    }
-
-    // Method 3: Ask TrainSystem to check all registered trains
-    if (globalTrainSystem) {
-        const trainController = globalTrainSystem.findTrainByMesh(mesh);
-        if (trainController) {
-            return true;
-        }
-    }
-
-    // Method 4: Check parent hierarchy for train markers
-    let parent = mesh.parent;
-    while (parent) {
-        if ((parent as any).__isTrainRoot || (parent as any).metadata?.isTrainRoot) {
-            return true;
-        }
-        parent = parent.parent;
-    }
-
-    return false;
+    return globalTrainSystem.isTrainMesh(mesh);
 }
 
 /**
- * Get the train ID for a mesh (if it's part of a train)
+ * Get the train ID from a mesh if it belongs to a train
  * 
- * @param mesh - The mesh to check
- * @returns Train ID or null
+ * @param mesh - Mesh to check
+ * @returns Train ID string or null
  */
-export function getTrainIdFromMesh(mesh: AbstractMesh | null | undefined): string | null {
-    if (!mesh) return null;
-
-    // Method 1: Direct controller reference
-    const controller = (mesh as any).__trainController;
-    if (controller) {
-        return controller.getId();
+export function getTrainIdFromMesh(mesh: AbstractMesh): string | null {
+    if (!globalTrainSystem) {
+        return null;
     }
 
-    // Method 2: Metadata
-    if (mesh.metadata?.trainId) {
-        return mesh.metadata.trainId;
-    }
-
-    // Method 3: Ask TrainSystem
-    if (globalTrainSystem) {
-        const trainController = globalTrainSystem.findTrainByMesh(mesh);
-        if (trainController) {
-            return trainController.getId();
-        }
-    }
-
-    // Method 4: Check parent hierarchy
-    let parent = mesh.parent;
-    while (parent) {
-        if ((parent as any).__trainId) {
-            return (parent as any).__trainId;
-        }
-        if (parent.metadata?.trainId) {
-            return parent.metadata.trainId;
-        }
-        parent = parent.parent;
-    }
-
-    return null;
-}
-
-/**
- * Check if we should handle this mesh as a train for driving
- * Takes into account modifier keys
- * 
- * @param mesh - The mesh clicked
- * @param event - The pointer event (to check modifier keys)
- * @returns Object with handling recommendation
- */
-export function getTrainClickBehavior(
-    mesh: AbstractMesh | null | undefined,
-    event?: PointerEvent | MouseEvent
-): TrainClickBehavior {
-    const result: TrainClickBehavior = {
-        isTrain: false,
-        shouldDrive: false,
-        shouldReposition: false,
-        trainId: null
-    };
-
-    if (!mesh) return result;
-
-    const trainId = getTrainIdFromMesh(mesh);
-    if (!trainId) return result;
-
-    result.isTrain = true;
-    result.trainId = trainId;
-
-    // Check modifier keys
-    const shiftHeld = event?.shiftKey ?? false;
-    const ctrlHeld = event?.ctrlKey ?? false;
-    const altHeld = event?.altKey ?? false;
-
-    // Shift+Click = Reposition mode
-    // Regular Click = Drive mode
-    if (shiftHeld) {
-        result.shouldReposition = true;
-        result.shouldDrive = false;
-    } else {
-        result.shouldDrive = true;
-        result.shouldReposition = false;
-    }
-
-    return result;
+    const controller = globalTrainSystem.findTrainByMesh(mesh);
+    return controller ? controller.getId() : null;
 }
 
 // ============================================================================
@@ -201,19 +116,119 @@ export function getTrainClickBehavior(
 
 /**
  * Result of train click behavior check
+ * 
+ * UPDATED v2.0.0: Simplified for modal-based approach
+ *   - shouldDefer: If true, the click should be handled by TrainSystem
+ *     (which will show the modal for user to choose action)
  */
 export interface TrainClickBehavior {
     /** Whether the clicked mesh is part of a train */
     isTrain: boolean;
 
-    /** Whether we should activate driving controls */
-    shouldDrive: boolean;
-
-    /** Whether we should allow repositioning */
-    shouldReposition: boolean;
+    /** 
+     * Whether to defer to TrainSystem 
+     * If true, don't process this click - TrainSystem will show modal
+     */
+    shouldDefer: boolean;
 
     /** Train ID if it's a train */
     trainId: string | null;
+
+    /** Train name if it's a train */
+    trainName: string | null;
+}
+
+/**
+ * Analyze click behavior for a mesh
+ * 
+ * UPDATED v2.0.0: Simplified - always defer train clicks to TrainSystem
+ * The TrainSystem will show a modal for the user to choose between
+ * moving or driving the train.
+ * 
+ * @param mesh - Mesh that was clicked
+ * @param event - Pointer/mouse event (optional, no longer used for modifier detection)
+ * @returns Click behavior analysis
+ * 
+ * @example
+ * ```typescript
+ * const behavior = getTrainClickBehavior(pickedMesh, event);
+ * if (behavior.isTrain && behavior.shouldDefer) {
+ *     // TrainSystem will handle this (show modal)
+ *     return;
+ * }
+ * // Not a train - handle normally
+ * ```
+ */
+export function getTrainClickBehavior(
+    mesh: AbstractMesh,
+    event?: PointerEvent | MouseEvent
+): TrainClickBehavior {
+    const result: TrainClickBehavior = {
+        isTrain: false,
+        shouldDefer: false,
+        trainId: null,
+        trainName: null
+    };
+
+    if (!mesh) return result;
+
+    // Check if this mesh belongs to a train
+    if (!globalTrainSystem) {
+        return result;
+    }
+
+    const controller = globalTrainSystem.findTrainByMesh(mesh);
+
+    if (!controller) {
+        return result;
+    }
+
+    // This is a train mesh
+    result.isTrain = true;
+    result.trainId = controller.getId();
+    result.trainName = controller.getInfo().name;
+
+    // Always defer to TrainSystem - it will show the modal
+    // The user chooses between move/drive in the modal
+    result.shouldDefer = true;
+
+    return result;
+}
+
+// ============================================================================
+// LEGACY COMPATIBILITY
+// ============================================================================
+
+/**
+ * @deprecated Use getTrainClickBehavior instead
+ * 
+ * Legacy properties for backwards compatibility:
+ *   - shouldDrive: Now always false (user picks in modal)
+ *   - shouldReposition: Now always false (user picks in modal)
+ */
+export interface LegacyTrainClickBehavior extends TrainClickBehavior {
+    /** @deprecated Use modal instead */
+    shouldDrive: boolean;
+    /** @deprecated Use modal instead */
+    shouldReposition: boolean;
+}
+
+/**
+ * Get legacy-compatible click behavior
+ * @deprecated Use getTrainClickBehavior directly
+ */
+export function getLegacyTrainClickBehavior(
+    mesh: AbstractMesh,
+    event?: PointerEvent | MouseEvent
+): LegacyTrainClickBehavior {
+    const behavior = getTrainClickBehavior(mesh, event);
+
+    return {
+        ...behavior,
+        // These are always false now - modal handles the choice
+        shouldDrive: false,
+        shouldReposition: false
+    };
 }
 
 // ============================================================================

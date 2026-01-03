@@ -436,11 +436,18 @@ export class App {
             console.log('  Delete → Remove selected');
             console.log('  ESC → Deselect / Cancel placement');
             console.log('  V → Toggle camera mode');
-            console.log('  Home → Reset camera');
+            console.log('  Home → Reset camera (default view)');
             console.log('  Shift+S → Toggle auto-snap');
             console.log('  Shift+I → Toggle connection indicators');
             console.log('  Shift+C → Clear all track');
             console.log('  T → Place test tracks');
+            console.log('');
+            console.log('=== Camera Presets ===');
+            console.log('  F1 → Overhead planning view');
+            console.log('  F2 → Front elevation view');
+            console.log('  F3 → Side elevation view');
+            console.log('  F4 → Corner isometric view');
+            console.log('  Home → Default view');
             console.log('');
             console.log('=== Train Controls ===');
             console.log('  Shift+T → Register train models');
@@ -478,7 +485,6 @@ export class App {
             throw error;
         }
     }
-
 
 
 
@@ -1478,6 +1484,68 @@ export class App {
     private setupKeyboardShortcuts(): void {
         try {
             // ================================================================
+            // CAMERA PRESET SHORTCUTS (F1-F4)
+            // Must use document listener to intercept before browser handles
+            // F1 normally opens browser help - we must preventDefault
+            // ================================================================
+            document.addEventListener('keydown', (event: KeyboardEvent) => {
+                // Skip if typing in input fields
+                if (event.target instanceof HTMLInputElement ||
+                    event.target instanceof HTMLTextAreaElement ||
+                    event.target instanceof HTMLSelectElement) {
+                    return;
+                }
+
+                try {
+                    switch (event.key) {
+                        case 'F1':
+                            // Overhead planning view (top-down)
+                            event.preventDefault();
+                            event.stopPropagation();
+                            if (this.cameraSystem) {
+                                console.log('[App] F1 - Overhead planning view');
+                                this.cameraSystem.setPresetView('overhead');
+                            }
+                            break;
+
+                        case 'F2':
+                            // Front elevation view
+                            event.preventDefault();
+                            event.stopPropagation();
+                            if (this.cameraSystem) {
+                                console.log('[App] F2 - Front elevation view');
+                                this.cameraSystem.setPresetView('front');
+                            }
+                            break;
+
+                        case 'F3':
+                            // Side elevation view
+                            event.preventDefault();
+                            event.stopPropagation();
+                            if (this.cameraSystem) {
+                                console.log('[App] F3 - Side elevation view');
+                                this.cameraSystem.setPresetView('side');
+                            }
+                            break;
+
+                        case 'F4':
+                            // Corner/isometric view
+                            event.preventDefault();
+                            event.stopPropagation();
+                            if (this.cameraSystem) {
+                                console.log('[App] F4 - Corner isometric view');
+                                this.cameraSystem.setPresetView('corner');
+                            }
+                            break;
+                    }
+                } catch (error) {
+                    console.error('[App] Error handling F-key:', error);
+                }
+            });
+
+            console.log('[App] Camera preset shortcuts configured: F1=Overhead, F2=Front, F3=Side, F4=Corner');
+
+            // ================================================================
             // BABYLON.JS KEYBOARD OBSERVABLE
             // Handles most keys but may miss Delete/Backspace in some browsers
             // ================================================================
@@ -1594,6 +1662,9 @@ export class App {
                                         // Clear selection
                                         this.inputManager.clearSelection();
                                         console.log(`[App] ✓ Deleted ${selected.id}`);
+
+                                        // Mark layout as having unsaved changes
+                                        this.persistence?.markDirty();
                                     } else {
                                         console.warn(`[App] Failed to delete ${selected.id}`);
                                     }
@@ -1635,10 +1706,10 @@ export class App {
                             break;
 
                         case 'Home':
-                            // Reset camera
+                            // Reset camera to default view (using preset system)
                             if (this.cameraSystem) {
-                                this.cameraSystem.resetOrbitCamera();
-                                console.log('[App] Camera reset');
+                                console.log('[App] Home - Default view');
+                                this.cameraSystem.setPresetView('default');
                             }
                             break;
 

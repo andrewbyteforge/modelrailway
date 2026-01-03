@@ -329,9 +329,20 @@ export class ModelImportButton {
         console.log('╔════════════════════════════════════════════════════════════╗');
         console.log('║              MODEL & TRANSFORM CONTROLS                    ║');
         console.log('╠════════════════════════════════════════════════════════════╣');
-        console.log('║  Click model        → Select it                            ║');
-        console.log('║  Click train        → Select for DRIVING (TrainSystem)     ║');
+        console.log('║  TRAIN CONTROLS:                                           ║');
+        console.log('║  Click train        → Select for DRIVING                   ║');
         console.log('║  Shift+Click train  → Select for REPOSITIONING             ║');
+        console.log('╠════════════════════════════════════════════════════════════╣');
+        console.log('║  When DRIVING (train selected):                            ║');
+        console.log('║    ↑ / W            → Increase throttle                    ║');
+        console.log('║    ↓ / S            → Decrease throttle                    ║');
+        console.log('║    R                → Toggle direction (fwd/rev)           ║');
+        console.log('║    Space (hold)     → Apply brake                          ║');
+        console.log('║    H                → Sound horn                           ║');
+        console.log('║    Escape           → Deselect / Emergency brake           ║');
+        console.log('╠════════════════════════════════════════════════════════════╣');
+        console.log('║  OTHER MODELS:                                             ║');
+        console.log('║  Click model        → Select it                            ║');
         console.log('╠════════════════════════════════════════════════════════════╣');
         console.log('║  POSITIONING:                                              ║');
         console.log('║  Drag model         → Move it (XZ plane)                   ║');
@@ -715,7 +726,7 @@ export class ModelImportButton {
             // Skip if a train was just selected by TrainSystem (for driving)
             // This flag is set by TrainSystem's handlePointerDown
             if ((window as any).__trainSelected === true) {
-                console.log(`${LOG_PREFIX} Train selected for driving - skipping model selection`);
+                console.log(`${LOG_PREFIX} Train already selected for driving - skipping`);
                 return;
             }
 
@@ -723,27 +734,47 @@ export class ModelImportButton {
             this.pointerDownPos = { x: event.clientX, y: event.clientY };
 
             // ----------------------------------------------------------------
-            // NEW: Check if clicking on a train mesh
+            // FIXED: Check if clicking on a registered train using window.trainSystem
             // ----------------------------------------------------------------
             const pickedMesh = this.pickMeshAtScreenPosition(event.clientX, event.clientY);
 
             if (pickedMesh) {
-                // Check if this is a train mesh
-                const trainBehavior = getTrainClickBehavior(pickedMesh, event);
+                // Get trainSystem from window (set by App.ts)
+                const trainSystem = (window as any).trainSystem;
 
-                if (trainBehavior.isTrain) {
-                    if (trainBehavior.shouldDrive) {
-                        // Regular click (no Shift) on train
-                        // TrainSystem should have already handled this via scene.onPointerObservable
-                        // But if we somehow got here, defer anyway
-                        console.log(`${LOG_PREFIX} Train clicked (no modifier) - deferring to TrainSystem for driving`);
-                        this.pointerDownPos = null; // Cancel any pending interaction
-                        return;
+                if (trainSystem) {
+                    // Check if this mesh belongs to a registered train
+                    const trainController = trainSystem.findTrainByMesh?.(pickedMesh);
+
+                    if (trainController) {
+                        // This is a registered train!
+                        if (!event.shiftKey) {
+                            // Regular click (no Shift) = DRIVE mode
+                            // Let TrainSystem handle this - don't intercept
+                            console.log(`${LOG_PREFIX} Train clicked - deferring to TrainSystem for DRIVING`);
+                            console.log(`${LOG_PREFIX}   Tip: Use Shift+Click to reposition train instead`);
+                            this.pointerDownPos = null; // Cancel any pending interaction
+
+                            // Manually trigger train selection since scene.onPointerObservable 
+                            // might have already fired before this handler
+                            trainController.select();
+                            return;
+                        } else {
+                            // Shift+Click = REPOSITION mode
+                            console.log(`${LOG_PREFIX} Shift+Click on train - entering REPOSITION mode`);
+                            // Deselect from TrainSystem first to avoid conflicts
+                            trainSystem.deselectTrain?.();
+                            // Continue with normal model selection below
+                        }
                     }
+                }
 
-                    // Shift+Click on train - allow repositioning
-                    console.log(`${LOG_PREFIX} Shift+Click on train - entering reposition mode`);
-                    // Continue with normal model selection below
+                // Fallback: Also check using getTrainClickBehavior for non-registered trains
+                const trainBehavior = getTrainClickBehavior(pickedMesh, event);
+                if (trainBehavior.isTrain && trainBehavior.shouldDrive) {
+                    console.log(`${LOG_PREFIX} Unregistered train mesh clicked - check if train is on track`);
+                    this.pointerDownPos = null;
+                    return;
                 }
             }
 
@@ -924,6 +955,11 @@ export class ModelImportButton {
     /**
      * Handle click on models for selection
      * Extended to check for trains and also select/deselect in ScaleManager
+     * 
+     * Click behavior:
+     * - Click on train (no Shift) = Select for DRIVING (TrainSystem)
+     * - Shift+Click on train = Select for REPOSITIONING (here)
+     * - Click on other model = Select for manipulation (here)
      */
     private handleModelClick(event: PointerEvent): void {
         if (!this.modelSystem) return;
@@ -937,18 +973,35 @@ export class ModelImportButton {
 
         if (pickResult?.hit && pickResult.pickedMesh) {
             // ----------------------------------------------------------------
-            // NEW: Check if this is a train mesh
+            // FIXED: Check if this is a registered train using window.trainSystem
             // ----------------------------------------------------------------
-            const trainBehavior = getTrainClickBehavior(pickResult.pickedMesh, event);
+            const trainSystem = (window as any).trainSystem;
 
-            if (trainBehavior.isTrain) {
-                if (!event.shiftKey) {
-                    // Normal click on train - should be handled by TrainSystem
-                    console.log(`${LOG_PREFIX} Train click without Shift - ignoring (TrainSystem handles)`);
-                    return;
+            if (trainSystem) {
+                const trainController = trainSystem.findTrainByMesh?.(pickResult.pickedMesh);
+
+                if (trainController) {
+                    // This is a registered train
+                    if (!event.shiftKey) {
+                        // Normal click on train = DRIVE mode
+                        // TrainSystem handles this - we just need to ensure selection
+                        console.log(`${LOG_PREFIX} Train click (no Shift) - selecting for DRIVING`);
+                        trainController.select();
+                        return;
+                    }
+                    // Shift+Click = REPOSITION mode
+                    console.log(`${LOG_PREFIX} Shift+Click on train - selecting for REPOSITIONING`);
+                    // Deselect from driving mode first
+                    trainSystem.deselectTrain?.();
+                    // Continue to select for repositioning below
                 }
-                // Shift+Click - continue to select for repositioning
-                console.log(`${LOG_PREFIX} Shift+Click on train - selecting for repositioning`);
+            }
+
+            // Fallback check using getTrainClickBehavior
+            const trainBehavior = getTrainClickBehavior(pickResult.pickedMesh, event);
+            if (trainBehavior.isTrain && !event.shiftKey) {
+                console.log(`${LOG_PREFIX} Unregistered train click - ignoring`);
+                return;
             }
 
             // ----------------------------------------------------------------

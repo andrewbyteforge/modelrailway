@@ -1,108 +1,119 @@
 ﻿/**
- * TrainSystem.ts - Central manager for all train operations
+ * TrainSystem.ts - Train Management System
  * 
  * Path: frontend/src/systems/train/TrainSystem.ts
  * 
- * Coordinates multiple trains, handles input, manages selection,
- * and integrates with track and UI systems.
+ * Manages all train operations including:
+ * - Train registration and lifecycle
+ * - Keyboard controls for selected train
+ * - Pointer controls for train selection
+ * - Physics simulation updates
+ * - Points/switch management
  * 
- * UPDATED: Train selection now differentiates between:
- *   - Click = Select for DRIVING (keyboard controls active)
- *   - Shift+Click = Allow REPOSITIONING (handled by ModelImportButton)
+ * UPDATED v2.0.0: Click on train now shows a modal to choose between:
+ *   - Lift & Move: Pick up and reposition the train
+ *   - Drive: Control the train with keyboard
  * 
  * @module TrainSystem
  * @author Model Railway Workbench
- * @version 1.1.0 - Added train selection mode differentiation
+ * @version 2.0.0 - Modal-based train selection
  */
 
 import { Scene } from '@babylonjs/core/scene';
 import { TransformNode } from '@babylonjs/core/Meshes/transformNode';
 import { AbstractMesh } from '@babylonjs/core/Meshes/abstractMesh';
-import { Observable } from '@babylonjs/core/Misc/observable';
 import { PointerEventTypes } from '@babylonjs/core/Events/pointerEvents';
-import { TrainController, type TrainInfo, type TrainState } from './TrainController';
-import { PointsManager, type PointState, type PointData } from './PointsManager';
-import { TrainSoundManager } from './TrainSoundManager';
+import { Observable } from '@babylonjs/core/Misc/observable';
+
+import { TrackSystem } from '../track/TrackSystem';
+import { TrackGraph } from '../track/TrackGraph';
 import { TrackEdgeFinder } from './TrackEdgeFinder';
-import type { TrackSystem } from '../track/TrackSystem';
-import type { TrackGraph } from '../track/TrackGraph';
+import { TrainController, type TrainInfo } from './TrainController';
+import { PointsManager, type PointData, type PointChangeEvent } from './PointsManager';
+import { TrainSoundManager } from './TrainSoundManager';
+import {
+    showTrainSelectionModal,
+    isTrainSelectionModalOpen,
+    type TrainSelectionResult
+} from '../../ui/TrainSelectionModal';
 
 // ============================================================================
 // CONSTANTS
 // ============================================================================
 
-/** Logging prefix */
+/** Log prefix for console messages */
 const LOG_PREFIX = '[TrainSystem]';
 
 // ============================================================================
-// TYPE DEFINITIONS
+// TYPES & INTERFACES
 // ============================================================================
 
 /**
- * Train system configuration
+ * Configuration for TrainSystem
  */
 export interface TrainSystemConfig {
-    /** Enable train sounds */
+    /** Enable sound effects */
     enableSound: boolean;
-
     /** Enable keyboard controls */
     enableKeyboardControls: boolean;
-
-    /** Enable mouse/pointer controls */
+    /** Enable pointer/mouse controls */
     enablePointerControls: boolean;
-
-    /** Throttle step for keyboard controls */
+    /** Throttle step per key press (0-1) */
     throttleStep: number;
 }
 
 /**
- * Keyboard control mapping
+ * Default configuration
  */
-export interface TrainKeyboardControls {
-    /** Increase throttle */
+const DEFAULT_CONFIG: TrainSystemConfig = {
+    enableSound: true,
+    enableKeyboardControls: true,
+    enablePointerControls: true,
+    throttleStep: 0.1
+};
+
+/**
+ * Keyboard control mappings
+ */
+interface TrainKeyboardControls {
     throttleUp: string[];
-
-    /** Decrease throttle */
     throttleDown: string[];
-
-    /** Toggle direction */
-    reverseDirection: string[];
-
-    /** Apply brake */
     brake: string[];
-
-    /** Emergency brake */
-    emergencyBrake: string[];
-
-    /** Sound horn */
+    reverse: string[];
     horn: string[];
-
-    /** Deselect train */
-    deselect: string[];
+    emergencyStop: string[];
 }
 
 /**
  * Default keyboard controls
  */
 const DEFAULT_KEYBOARD_CONTROLS: TrainKeyboardControls = {
-    throttleUp: ['ArrowUp', 'w', 'W'],
-    throttleDown: ['ArrowDown', 's', 'S'],
-    reverseDirection: ['r', 'R'],
-    brake: [' '], // Space
-    emergencyBrake: ['Escape'],
+    throttleUp: ['w', 'W', 'ArrowUp'],
+    throttleDown: ['s', 'S', 'ArrowDown'],
+    brake: [' '],               // Space
+    reverse: ['r', 'R'],
     horn: ['h', 'H'],
-    deselect: ['Escape']
+    emergencyStop: ['x', 'X', 'Escape']
 };
+
+/**
+ * Event data for train reposition request
+ */
+export interface TrainRepositionRequest {
+    /** ID of the train to reposition */
+    trainId: string;
+    /** Name of the train */
+    trainName: string;
+    /** The train controller instance */
+    controller: TrainController;
+}
 
 // ============================================================================
 // TRAIN SYSTEM CLASS
 // ============================================================================
 
 /**
- * TrainSystem - Central manager for all train operations
- * 
- * Coordinates multiple trains, handles input, manages selection,
- * and integrates with track and UI systems.
+ * TrainSystem - Manages all train operations
  * 
  * @example
  * ```typescript
@@ -176,7 +187,13 @@ export class TrainSystem {
     public onSelectionChanged: Observable<TrainController | null> = new Observable();
 
     /** Emitted when a point state changes */
-    public onPointChanged: Observable<PointData> = new Observable();
+    public onPointChanged: Observable<PointChangeEvent> = new Observable();
+
+    /** 
+     * Emitted when user wants to reposition a train (from modal)
+     * External systems (like ModelImportButton) should subscribe to this
+     */
+    public onRepositionRequested: Observable<TrainRepositionRequest> = new Observable();
 
     // ========================================================================
     // CONSTRUCTOR
@@ -196,25 +213,21 @@ export class TrainSystem {
         this.scene = scene;
         this.trackSystem = trackSystem;
         this.graph = trackSystem.getGraph();
-
-        // Apply default config
-        this.config = {
-            enableSound: true,
-            enableKeyboardControls: true,
-            enablePointerControls: true,
-            throttleStep: 0.1,
-            ...config
-        };
-
+        this.config = { ...DEFAULT_CONFIG, ...config };
         this.keyboardControls = { ...DEFAULT_KEYBOARD_CONTROLS };
 
         // Create points manager
-        this.pointsManager = new PointsManager(scene, trackSystem);
+        this.pointsManager = new PointsManager(this.scene, trackSystem);
 
-        // Create global sound manager for UI sounds (points, etc.)
+        // Relay point changes
+        this.pointsManager.onPointChanged.add((data) => {
+            this.onPointChanged.notifyObservers(data);
+        });
+
+        // Create global sound manager (for horn, etc.)
         this.globalSoundManager = new TrainSoundManager(scene);
 
-        console.log(`${LOG_PREFIX} Train system created`);
+        console.log(`${LOG_PREFIX} Created`);
     }
 
     // ========================================================================
@@ -223,30 +236,13 @@ export class TrainSystem {
 
     /**
      * Initialize the train system
-     * Sets up input handlers, scans for existing trains, etc.
+     * Sets up input handlers and prepares for train management
      */
     initialize(): void {
         if (this.isInitialized) {
             console.warn(`${LOG_PREFIX} Already initialized`);
             return;
         }
-
-        console.log(`${LOG_PREFIX} Initializing...`);
-
-        // Initialize points manager
-        this.pointsManager.initialize();
-
-        // Setup point change listener
-        this.pointsManager.onPointChanged.add((event) => {
-            // Play sound
-            this.globalSoundManager.playPointsSound();
-
-            // Forward to our observable
-            const pointData = this.pointsManager.getPointData(event.pieceId);
-            if (pointData) {
-                this.onPointChanged.notifyObservers(pointData);
-            }
-        });
 
         // Setup input handlers
         if (this.config.enableKeyboardControls) {
@@ -257,35 +253,74 @@ export class TrainSystem {
             this.setupPointerControls();
         }
 
-        this.isInitialized = true;
-        console.log(`${LOG_PREFIX} ✓ Initialized`);
+        // Subscribe to graph changes for points detection
+        this.setupPointsDetection();
 
-        // Log controls help
-        this.logControlsHelp();
+        this.isInitialized = true;
+
+        console.log(`${LOG_PREFIX} Initialized`);
+        console.log(`${LOG_PREFIX}   Keyboard: ${this.config.enableKeyboardControls ? 'ON' : 'OFF'}`);
+        console.log(`${LOG_PREFIX}   Pointer: ${this.config.enablePointerControls ? 'ON' : 'OFF'}`);
+        console.log(`${LOG_PREFIX}   Sound: ${this.config.enableSound ? 'ON' : 'OFF'}`);
     }
 
     /**
-     * Log controls help to console
+     * Dispose of the train system
+     * Cleans up all resources and event handlers
      */
-    private logControlsHelp(): void {
-        console.log('');
-        console.log('╔════════════════════════════════════════════════════════════╗');
-        console.log('║                    TRAIN CONTROLS                          ║');
-        console.log('╠════════════════════════════════════════════════════════════╣');
-        console.log('║  Click train      → Select for DRIVING                     ║');
-        console.log('║  Shift+Click      → Select for REPOSITIONING               ║');
-        console.log('╠════════════════════════════════════════════════════════════╣');
-        console.log('║  When driving (train selected):                            ║');
-        console.log('║    ↑ / W          → Increase throttle                      ║');
-        console.log('║    ↓ / S          → Decrease throttle                      ║');
-        console.log('║    R              → Toggle direction (forward/reverse)     ║');
-        console.log('║    Space          → Apply brake (hold)                     ║');
-        console.log('║    H              → Sound horn                             ║');
-        console.log('║    Escape         → Deselect / Emergency brake             ║');
-        console.log('╠════════════════════════════════════════════════════════════╣');
-        console.log('║  Click points     → Toggle switch direction                ║');
-        console.log('╚════════════════════════════════════════════════════════════╝');
-        console.log('');
+    dispose(): void {
+        // Remove keyboard handlers
+        if (this.keydownHandler) {
+            window.removeEventListener('keydown', this.keydownHandler);
+            this.keydownHandler = null;
+        }
+        if (this.keyupHandler) {
+            window.removeEventListener('keyup', this.keyupHandler);
+            this.keyupHandler = null;
+        }
+
+        // Remove pointer observer
+        if (this.pointerObserver) {
+            this.scene.onPointerObservable.remove(this.pointerObserver);
+            this.pointerObserver = null;
+        }
+
+        // Dispose all trains
+        for (const train of this.trains.values()) {
+            train.dispose();
+        }
+        this.trains.clear();
+
+        // Dispose points manager
+        this.pointsManager.dispose();
+
+        // Dispose sound manager
+        this.globalSoundManager.dispose();
+
+        // Clear observables
+        this.onTrainAdded.clear();
+        this.onTrainRemoved.clear();
+        this.onSelectionChanged.clear();
+        this.onPointChanged.clear();
+        this.onRepositionRequested.clear();
+
+        this.isInitialized = false;
+
+        console.log(`${LOG_PREFIX} Disposed`);
+    }
+
+    // ========================================================================
+    // UPDATE LOOP
+    // ========================================================================
+
+    /**
+     * Update all trains (call each frame)
+     * @param deltaTime - Time since last frame in seconds
+     */
+    update(deltaTime: number): void {
+        for (const train of this.trains.values()) {
+            train.update(deltaTime);
+        }
     }
 
     // ========================================================================
@@ -295,70 +330,105 @@ export class TrainSystem {
     /**
      * Add a train to the system
      * @param rootNode - Root transform node of the train model
-     * @param info - Train identification info
-     * @param config - Optional controller configuration
+     * @param info - Train information
      * @returns The created TrainController
      */
     addTrain(
         rootNode: TransformNode,
-        info: Omit<TrainInfo, 'id'> & { id?: string },
-        config?: Partial<import('./TrainController').TrainControllerConfig>
+        info: Partial<TrainInfo>
     ): TrainController {
         // Generate ID if not provided
-        const trainId = info.id || `train_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+        const trainId = info.id || `train-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
 
         // Check for duplicate
         if (this.trains.has(trainId)) {
-            console.warn(`${LOG_PREFIX} Train ${trainId} already exists, returning existing`);
-            return this.trains.get(trainId)!;
+            console.warn(`${LOG_PREFIX} Train ${trainId} already exists, removing old one`);
+            this.removeTrain(trainId);
         }
 
-        // Create full info
-        const fullInfo: TrainInfo = {
+        // Build the train info object
+        const trainInfo: TrainInfo = {
             id: trainId,
-            name: info.name,
-            category: info.category,
+            name: info.name || rootNode.name || 'Unnamed Train',
+            category: info.category || 'locomotive',
             libraryEntryId: info.libraryEntryId
         };
 
-        // Create controller
+        // Create controller with CORRECT parameter order:
+        // 1. scene, 2. graph, 3. pointsManager, 4. rootNode, 5. info, 6. config (optional)
         const controller = new TrainController(
             this.scene,
             this.graph,
             this.pointsManager,
             rootNode,
-            fullInfo,
-            {
-                enableSound: this.config.enableSound,
-                ...config
-            }
+            trainInfo
         );
 
-        // Subscribe to controller events
-        controller.onSelected.add(() => {
-            this.handleTrainSelected(controller);
-        });
-
-        controller.onDeselected.add(() => {
-            this.handleTrainDeselected(controller);
-        });
-
-        // Store controller
+        // Store reference
         this.trains.set(trainId, controller);
 
-        // Mark root node as train root for detection
-        (rootNode as any).__isTrainRoot = true;
-        (rootNode as any).__trainId = trainId;
-        if (!rootNode.metadata) rootNode.metadata = {};
-        rootNode.metadata.isTrainRoot = true;
-        rootNode.metadata.trainId = trainId;
+        // Subscribe to selection events
+        controller.onSelected.add(() => this.handleTrainSelected(controller));
+        controller.onDeselected.add(() => this.handleTrainDeselected(controller));
 
         // Notify observers
         this.onTrainAdded.notifyObservers(controller);
 
-        console.log(`${LOG_PREFIX} Added train: ${fullInfo.name} (${trainId})`);
+        console.log(`${LOG_PREFIX} Added train: ${trainId} (${info.name})`);
 
         return controller;
+    }
+
+    /**
+     * Register an existing model as a train
+     * @param rootNode - The model's root node
+     * @param name - Display name for the train
+     * @param edgeId - Optional edge ID to place on
+     * @param t - Optional position along edge (0-1)
+     * @returns TrainController if successful
+     */
+    registerExistingModel(
+        rootNode: TransformNode,
+        name: string,
+        edgeId?: string,
+        t: number = 0.5
+    ): TrainController | null {
+        try {
+            // If no edge specified, try to find one near the model
+            let targetEdgeId = edgeId;
+
+            if (!targetEdgeId) {
+                const edgeFinder = new TrackEdgeFinder(this.graph);
+                const position = rootNode.getAbsolutePosition
+                    ? rootNode.getAbsolutePosition()
+                    : rootNode.position;
+
+                const result = edgeFinder.findNearestEdge(position, { maxDistance: 0.1 });
+
+                if (result) {
+                    targetEdgeId = result.edge.id;
+                } else {
+                    console.warn(`${LOG_PREFIX} Model "${name}" not near any track`);
+                    // Still register but won't be able to move on track
+                }
+            }
+
+            // Create controller
+            const controller = this.addTrain(rootNode, {
+                name,
+                category: 'locomotive'
+            });
+
+            // Place on track if we found an edge
+            if (targetEdgeId) {
+                controller.placeOnEdge(targetEdgeId, t, 1);
+            }
+
+            return controller;
+        } catch (error) {
+            console.error(`${LOG_PREFIX} Failed to register model:`, error);
+            return null;
+        }
     }
 
     /**
@@ -448,8 +518,9 @@ export class TrainSystem {
 
                 if (isLikelyTrain) {
                     // Check if on track
-                    const position = node.getAbsolutePosition ?
-                        node.getAbsolutePosition() : node.position;
+                    const position = node.getAbsolutePosition
+                        ? node.getAbsolutePosition()
+                        : node.position;
 
                     const edgeResult = edgeFinder.findNearestEdge(position, { maxDistance: 0.1 });
 
@@ -575,21 +646,10 @@ export class TrainSystem {
      * Public method to find a train controller from a mesh
      * 
      * Used by external systems (like ModelImportButton) to check
-     * if a clicked mesh belongs to a registered train. This allows
-     * other click handlers to defer to TrainSystem when appropriate.
+     * if a clicked mesh belongs to a registered train.
      * 
      * @param mesh - Mesh to check
      * @returns TrainController if found, null otherwise
-     * 
-     * @example
-     * ```typescript
-     * // In ModelImportButton or other click handler:
-     * const trainController = trainSystem.findTrainByMesh(clickedMesh);
-     * if (trainController) {
-     *     // This is a train - let TrainSystem handle it
-     *     return;
-     * }
-     * ```
      */
     findTrainByMesh(mesh: AbstractMesh): TrainController | null {
         return this.findTrainFromMesh(mesh);
@@ -640,6 +700,11 @@ export class TrainSystem {
             return;
         }
 
+        // Ignore if train selection modal is open
+        if (isTrainSelectionModalOpen()) {
+            return;
+        }
+
         const key = event.key;
 
         // Track held keys
@@ -651,50 +716,31 @@ export class TrainSystem {
             if (this.keyboardControls.throttleUp.includes(key)) {
                 event.preventDefault();
                 this.selectedTrain.increaseThrottle(this.config.throttleStep);
-                return;
             }
-
             // Throttle down
-            if (this.keyboardControls.throttleDown.includes(key)) {
+            else if (this.keyboardControls.throttleDown.includes(key)) {
                 event.preventDefault();
                 this.selectedTrain.decreaseThrottle(this.config.throttleStep);
-                return;
             }
-
-            // Toggle direction
-            if (this.keyboardControls.reverseDirection.includes(key)) {
-                event.preventDefault();
-                this.selectedTrain.toggleDirection();
-                return;
-            }
-
             // Brake
-            if (this.keyboardControls.brake.includes(key)) {
+            else if (this.keyboardControls.brake.includes(key)) {
                 event.preventDefault();
                 this.selectedTrain.applyBrake();
-                return;
             }
-
-            // Emergency brake
-            if (this.keyboardControls.emergencyBrake.includes(key)) {
+            // Reverse
+            else if (this.keyboardControls.reverse.includes(key)) {
                 event.preventDefault();
-                this.selectedTrain.emergencyBrake();
-                return;
+                this.selectedTrain.toggleDirection();
             }
-
             // Horn
-            if (this.keyboardControls.horn.includes(key)) {
+            else if (this.keyboardControls.horn.includes(key)) {
                 event.preventDefault();
                 this.selectedTrain.soundHorn();
-                return;
             }
-        }
-
-        // Deselect (works even without selected train)
-        if (this.keyboardControls.deselect.includes(key)) {
-            if (this.selectedTrain) {
+            // Emergency stop
+            else if (this.keyboardControls.emergencyStop.includes(key)) {
                 event.preventDefault();
-                this.deselectTrain();
+                this.selectedTrain.emergencyStop();
             }
         }
     }
@@ -704,21 +750,20 @@ export class TrainSystem {
      * @param event - Keyboard event
      */
     private handleKeyUp(event: KeyboardEvent): void {
-        const key = event.key;
-        this.heldKeys.delete(key);
+        this.heldKeys.delete(event.key);
 
         // Release brake when space is released
-        if (this.selectedTrain && this.keyboardControls.brake.includes(key)) {
+        if (this.selectedTrain && this.keyboardControls.brake.includes(event.key)) {
             this.selectedTrain.releaseBrake();
         }
     }
 
     // ========================================================================
-    // INPUT HANDLING - POINTER
+    // INPUT HANDLING - POINTER (with Modal)
     // ========================================================================
 
     /**
-     * Setup pointer (mouse/touch) controls
+     * Setup pointer controls for train selection
      */
     private setupPointerControls(): void {
         this.pointerObserver = this.scene.onPointerObservable.add((pointerInfo) => {
@@ -738,9 +783,10 @@ export class TrainSystem {
     /**
      * Handle pointer down events
      * 
-     * UPDATED: Now checks for Shift key to differentiate between:
-     *   - Regular click = Select for DRIVING
-     *   - Shift+Click = Allow REPOSITIONING (defer to ModelImportButton)
+     * UPDATED v2.0.0: Now shows a modal when clicking on a train
+     * User can choose to either:
+     *   - Lift & Move (reposition the train)
+     *   - Drive (select for keyboard control)
      * 
      * @param pointerInfo - Pointer event info
      */
@@ -751,37 +797,38 @@ export class TrainSystem {
         const mesh = pickResult.pickedMesh;
         const event = pointerInfo.event as PointerEvent;
 
+        // Skip if modal is already open
+        if (isTrainSelectionModalOpen()) {
+            return;
+        }
+
         // ----------------------------------------------------------------
         // Check if clicked on a train
         // ----------------------------------------------------------------
         const trainController = this.findTrainFromMesh(mesh);
         if (trainController) {
-            // Check for Shift key - if held, allow repositioning instead of driving
-            if (event?.shiftKey) {
-                console.log(`${LOG_PREFIX} Shift+Click on train "${trainController.getInfo().name}" - deferring to reposition mode`);
-                // Don't select - let ModelImportButton handle it for repositioning
-                return;
-            }
+            const trainInfo = trainController.getInfo();
 
-            // Regular click - select train for DRIVING
-            console.log(`${LOG_PREFIX} Selecting train "${trainController.getInfo().name}" for driving`);
-            trainController.select();
+            console.log(`${LOG_PREFIX} Train clicked: "${trainInfo.name}" - showing selection modal`);
 
-            // The selection handler will update selectedTrain and notify observers
-
-            // Mark event as handled to prevent other systems from processing
-            // Set a flag that other systems can check
-            (window as any).__trainSelected = true;
-            (window as any).__selectedTrainId = trainController.getId();
-
-            // Clear the flag after a short delay (for async handlers that run after us)
+            // Mark that we're handling this click (prevent other systems)
+            (window as any).__trainClicked = true;
             setTimeout(() => {
-                // Only clear if still the same train (prevents race condition)
-                if ((window as any).__selectedTrainId === trainController.getId()) {
-                    // Keep __trainSelected true while train is selected
-                    // It will be cleared when train is deselected
-                }
+                (window as any).__trainClicked = false;
             }, 100);
+
+            // Show the selection modal
+            showTrainSelectionModal(
+                {
+                    trainId: trainInfo.id,
+                    trainName: trainInfo.name,
+                    screenX: event.clientX,
+                    screenY: event.clientY
+                },
+                (result: TrainSelectionResult) => {
+                    this.handleTrainSelectionResult(result, trainController);
+                }
+            );
 
             return;
         }
@@ -812,15 +859,72 @@ export class TrainSystem {
     }
 
     /**
+     * Handle the result from the train selection modal
+     * 
+     * @param result - The user's selection
+     * @param controller - The train controller that was clicked
+     */
+    private handleTrainSelectionResult(
+        result: TrainSelectionResult,
+        controller: TrainController
+    ): void {
+        console.log(`${LOG_PREFIX} Modal result: ${result.action} for "${result.trainName}"`);
+
+        switch (result.action) {
+            case 'drive':
+                // Select the train for driving
+                console.log(`${LOG_PREFIX} Selecting train "${result.trainName}" for driving`);
+                controller.select();
+
+                // Set window flags for other systems
+                (window as any).__trainSelected = true;
+                (window as any).__selectedTrainId = controller.getId();
+                break;
+
+            case 'move':
+                // Emit reposition request for external systems to handle
+                console.log(`${LOG_PREFIX} Requesting reposition for "${result.trainName}"`);
+
+                // Set a window flag that ModelImportButton can check
+                (window as any).__trainRepositionRequested = true;
+                (window as any).__trainToReposition = result.trainId;
+
+                // Notify observers (like ModelImportButton)
+                this.onRepositionRequested.notifyObservers({
+                    trainId: result.trainId,
+                    trainName: result.trainName,
+                    controller: controller
+                });
+
+                // Clear the flag after a short delay
+                setTimeout(() => {
+                    (window as any).__trainRepositionRequested = false;
+                    (window as any).__trainToReposition = null;
+                }, 100);
+                break;
+
+            case 'cancel':
+                // User cancelled - do nothing
+                console.log(`${LOG_PREFIX} Selection cancelled`);
+                break;
+        }
+    }
+
+    /**
      * Handle pointer move events (hover)
      * @param pointerInfo - Pointer event info
      */
     private handlePointerMove(pointerInfo: any): void {
+        // Don't update hover states if modal is open
+        if (isTrainSelectionModalOpen()) {
+            return;
+        }
+
         const pickResult = pointerInfo.pickInfo;
 
         // Clear all hover states first
         for (const train of this.trains.values()) {
-            train.setHovered(false);
+            train.setHover(false);
         }
 
         if (!pickResult?.hit || !pickResult.pickedMesh) return;
@@ -830,7 +934,7 @@ export class TrainSystem {
         // Check if hovering over a train
         const trainController = this.findTrainFromMesh(mesh);
         if (trainController) {
-            trainController.setHovered(true);
+            trainController.setHover(true);
             // Change cursor to pointer
             const canvas = this.scene.getEngine().getRenderingCanvas();
             if (canvas) {
@@ -920,82 +1024,39 @@ export class TrainSystem {
     /**
      * Toggle a point's state
      * @param pieceId - ID of the point piece
-     * @returns New state or undefined if not a point
+     * @returns true if point was toggled
      */
-    togglePoint(pieceId: string): PointState | undefined {
-        if (!this.pointsManager.isPoint(pieceId)) {
-            return undefined;
-        }
+    togglePoint(pieceId: string): boolean {
+        return this.pointsManager.togglePoint(pieceId);
+    }
 
-        this.pointsManager.togglePoint(pieceId, true);
-        return this.pointsManager.getPointState(pieceId);
+    /**
+     * Setup points detection from track graph
+     */
+    private setupPointsDetection(): void {
+        // Initialize points manager - this scans existing track for switches
+        this.pointsManager.initialize();
+
+        // Could add observers for graph changes here if needed
     }
 
     // ========================================================================
-    // UPDATE LOOP
+    // UTILITY
     // ========================================================================
 
     /**
-     * Update all trains
-     * Call this from the render loop
-     * 
-     * @param deltaTime - Time since last update in seconds
+     * Get the track graph
+     * @returns Track graph instance
      */
-    update(deltaTime: number): void {
-        // Update all train controllers
-        for (const train of this.trains.values()) {
-            train.update(deltaTime);
-        }
+    getGraph(): TrackGraph {
+        return this.graph;
     }
 
-    // ========================================================================
-    // DISPOSAL
-    // ========================================================================
-
     /**
-     * Clean up resources
+     * Get the track system
+     * @returns Track system instance
      */
-    dispose(): void {
-        console.log(`${LOG_PREFIX} Disposing...`);
-
-        // Remove keyboard handlers
-        if (this.keydownHandler) {
-            window.removeEventListener('keydown', this.keydownHandler);
-            this.keydownHandler = null;
-        }
-        if (this.keyupHandler) {
-            window.removeEventListener('keyup', this.keyupHandler);
-            this.keyupHandler = null;
-        }
-
-        // Remove pointer observer
-        if (this.pointerObserver) {
-            this.scene.onPointerObservable.remove(this.pointerObserver);
-            this.pointerObserver = null;
-        }
-
-        // Dispose all trains
-        for (const train of this.trains.values()) {
-            train.dispose();
-        }
-        this.trains.clear();
-
-        // Clear selection
-        this.selectedTrain = null;
-        (window as any).__trainSelected = false;
-        (window as any).__selectedTrainId = null;
-
-        // Clear observables
-        this.onTrainAdded.clear();
-        this.onTrainRemoved.clear();
-        this.onSelectionChanged.clear();
-        this.onPointChanged.clear();
-
-        // Dispose points manager
-        this.pointsManager.dispose();
-
-        this.isInitialized = false;
-
-        console.log(`${LOG_PREFIX} ✓ Disposed`);
+    getTrackSystem(): TrackSystem {
+        return this.trackSystem;
     }
 }
